@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHeartbeatToolResponsePayload } from "../auto-reply/heartbeat-tool-response.js";
 import { HEARTBEAT_TOKEN } from "../auto-reply/tokens.js";
 import { loadCommitmentStore, saveCommitmentStore } from "../commitments/store.js";
 import type { CommitmentRecord, CommitmentStoreFile } from "../commitments/types.js";
@@ -266,6 +267,113 @@ describe("runHeartbeatOnce commitments", () => {
     );
     expect(sendTelegram).toHaveBeenNthCalledWith(
       2,
+      "155462274",
+      "How did the interview go?",
+      expect.any(Object),
+    );
+    expect(store.commitments[0]).toMatchObject({
+      id: "cm_interview",
+      status: "sent",
+      attempts: 1,
+      sentAtMs: nowMs,
+    });
+  });
+
+  it("runs due commitments after a heartbeat task returns a quiet tool ack", async () => {
+    const { result, sendTelegram, store } = await withTempHeartbeatSandbox(
+      async ({ tmpDir, storePath, replySpy }) => {
+        vi.stubEnv("OPENCLAW_STATE_DIR", tmpDir);
+        const sessionKey = "agent:main:telegram:user-155462274";
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: {
+              workspace: tmpDir,
+              heartbeat: {
+                every: "5m",
+                target: "last",
+              },
+            },
+          },
+          channels: { telegram: { allowFrom: ["*"] } },
+          session: { store: storePath },
+          commitments: { enabled: true },
+        };
+        await fs.writeFile(
+          path.join(tmpDir, "HEARTBEAT.md"),
+          `tasks:
+  - name: deployment-status
+    interval: 0
+    prompt: Check deployment status with the normal tools
+`,
+          "utf-8",
+        );
+        await seedSessionStore(storePath, sessionKey, {
+          lastChannel: "telegram",
+          lastProvider: "telegram",
+          lastTo: "stale-target",
+        });
+        await saveCommitmentStore(undefined, {
+          version: 1,
+          commitments: [buildCommitment({ id: "cm_interview", sessionKey, to: "155462274" })],
+        });
+
+        const sendTelegram = vi.fn().mockResolvedValue({
+          messageId: "m1",
+          chatId: "155462274",
+        });
+        replySpy.mockImplementation(
+          async (
+            ctx: { Body?: string; OriginatingChannel?: string; OriginatingTo?: string },
+            opts?: { disableTools?: boolean; skillFilter?: string[] },
+          ) => {
+            if (replySpy.mock.calls.length === 1) {
+              expect(ctx.Body).toContain("Run the following periodic tasks");
+              expect(ctx.Body).toContain("- deployment-status: Check deployment status");
+              expect(ctx.Body).not.toContain("Due inferred follow-up commitments");
+              expect(ctx.Body).toContain("heartbeat_respond");
+              expect(ctx.OriginatingChannel).toBe("telegram");
+              expect(ctx.OriginatingTo).toBe("stale-target");
+              expect(opts?.disableTools).toBeUndefined();
+              expect(opts?.skillFilter).toBeUndefined();
+              return createHeartbeatToolResponsePayload({
+                outcome: "no_change",
+                notify: false,
+                summary: "Deployment status checked.",
+              });
+            }
+            expect(ctx.Body).toContain("Due inferred follow-up commitments");
+            expect(ctx.Body).toContain("How did the interview go?");
+            expect(ctx.OriginatingChannel).toBe("telegram");
+            expect(ctx.OriginatingTo).toBe("155462274");
+            expect(opts?.disableTools).toBe(true);
+            expect(opts?.skillFilter).toEqual([]);
+            return { text: "How did the interview go?" };
+          },
+        );
+
+        const result = await runHeartbeatOnce({
+          cfg,
+          agentId: "main",
+          sessionKey,
+          deps: {
+            getReplyFromConfig: replySpy,
+            telegram: sendTelegram,
+            getQueueSize: () => 0,
+            nowMs: () => nowMs,
+          },
+        });
+
+        return {
+          result,
+          sendTelegram,
+          store: await loadCommitmentStore(),
+        };
+      },
+    );
+
+    expect(result.status).toBe("ran");
+    expect(sendTelegram).toHaveBeenCalledTimes(1);
+    expect(sendTelegram).toHaveBeenCalledWith(
       "155462274",
       "How did the interview go?",
       expect.any(Object),
