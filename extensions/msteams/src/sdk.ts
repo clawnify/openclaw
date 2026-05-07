@@ -3,17 +3,34 @@ import type { MSTeamsCredentials, MSTeamsFederatedCredentials } from "./token.js
 import { buildOpenClawUserAgentFragment } from "./user-agent.js";
 
 /**
+ * Structural shape of the SDK's HTTP server adapter (e.g. `ExpressAdapter`).
+ * Modeled here rather than imported from `@microsoft/teams.apps` because the
+ * SDK's barrel re-exports `ExpressAdapter` / `IHttpServerAdapter` through a
+ * folder-with-index.d.ts chain (`export * from "./http"`) that NodeNext
+ * resolution doesn't follow through every tsconfig setup in this repo.
+ * This keeps the Teams SDK type-import surface to just `App`.
+ */
+type MSTeamsHttpServerAdapter = {
+  registerRoute(method: string, path: string, handler: unknown): void;
+  start?(port: number | string): Promise<void>;
+  stop?(): Promise<void>;
+};
+
+type MSTeamsExpressAdapterCtor = new (
+  serverOrApp?: unknown,
+  options?: { logger?: unknown; onError?: (err: Error) => void },
+) => MSTeamsHttpServerAdapter;
+
+/**
  * Resolved Teams SDK modules loaded lazily to avoid importing when the
- * provider is disabled.
+ * provider is disabled. `ExpressAdapter` is held as a constructor type
+ * because the SDK's chained `export *` barrel doesn't expose its class type
+ * through every tsconfig in this repo (see `MSTeamsHttpServerAdapter`).
  */
 type TeamsSdkModules = {
   App: typeof import("@microsoft/teams.apps").App;
-  ExpressAdapter: typeof import("@microsoft/teams.apps").ExpressAdapter;
+  ExpressAdapter: MSTeamsExpressAdapterCtor;
 };
-
-type ExpressAdapterCtorArg = ConstructorParameters<
-  typeof import("@microsoft/teams.apps").ExpressAdapter
->[0];
 
 /**
  * Structural interface for the Teams SDK App — avoids tsgo resolution bugs
@@ -82,7 +99,11 @@ let sdkAppPromise: Promise<TeamsSdkModules> | null = null;
 async function loadSdkModules(): Promise<TeamsSdkModules> {
   sdkAppPromise ??= import("@microsoft/teams.apps").then((m) => ({
     App: m.App,
-    ExpressAdapter: m.ExpressAdapter,
+    // ExpressAdapter is in the runtime barrel but its type is hidden behind
+    // the SDK's chained `export *` (see MSTeamsHttpServerAdapter comment).
+    // Cast to the structural constructor we model locally so the seam stays
+    // typed without depending on the SDK's namespace shape.
+    ExpressAdapter: (m as unknown as { ExpressAdapter: MSTeamsExpressAdapterCtor }).ExpressAdapter,
   }));
   return sdkAppPromise;
 }
@@ -90,12 +111,12 @@ async function loadSdkModules(): Promise<TeamsSdkModules> {
 /**
  * Lazily construct an ExpressAdapter that the Teams SDK App can register its
  * routes on. The dynamic import keeps the SDK bundle off the hot startup path
- * when msteams is disabled; the typed return preserves the SDK's adapter
- * contract through to `loadMSTeamsSdkWithAuth`.
+ * when msteams is disabled; the structural return type matches what
+ * `loadMSTeamsSdkWithAuth` accepts as its `httpServerAdapter` option.
  */
 export async function createMSTeamsExpressAdapter(
-  serverOrApp: ExpressAdapterCtorArg,
-): Promise<InstanceType<typeof import("@microsoft/teams.apps").ExpressAdapter>> {
+  serverOrApp: unknown,
+): Promise<MSTeamsHttpServerAdapter> {
   const { ExpressAdapter } = await loadSdkModules();
   return new ExpressAdapter(serverOrApp);
 }
@@ -113,7 +134,7 @@ export type CreateMSTeamsAppOptions = {
    * Use {@link createMSTeamsExpressAdapter} to construct a properly-typed
    * adapter from an Express application.
    */
-  httpServerAdapter?: import("@microsoft/teams.apps").IHttpServerAdapter;
+  httpServerAdapter?: MSTeamsHttpServerAdapter;
   /**
    * Custom messaging endpoint path.
    * @default '/api/messages'
