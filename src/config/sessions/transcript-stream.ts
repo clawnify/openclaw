@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import readline from "node:readline";
 
+import {
+  asyncIterableStream,
+  openClawStreamToAsyncIterable,
+} from "../../effect-runtime/stream.js";
+
 // Shared streaming helpers for JSONL session transcripts.
 //
 // Callers historically read the entire transcript with `fs.readFile` before
@@ -50,7 +55,7 @@ export async function* streamSessionTranscriptLines(
   const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   try {
-    for await (const line of rl) {
+    for await (const line of openClawStreamToAsyncIterable(asyncIterableStream(rl))) {
       if (options.signal?.aborted) {
         return;
       }
