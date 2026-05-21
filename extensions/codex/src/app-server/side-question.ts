@@ -19,7 +19,11 @@ import {
 import { handleCodexAppServerApprovalRequest } from "./approval-bridge.js";
 import { refreshCodexAppServerAuthTokens } from "./auth-bridge.js";
 import { isCodexAppServerApprovalRequest, type CodexAppServerClient } from "./client.js";
-import { readCodexPluginConfig, resolveCodexAppServerRuntimeOptions } from "./config.js";
+import {
+  readCodexPluginConfig,
+  resolveCodexAppServerRuntimeOptions,
+  resolveOpenClawExecPolicyForCodexAppServer,
+} from "./config.js";
 import {
   emitDynamicToolErrorDiagnostic,
   emitDynamicToolStartedDiagnostic,
@@ -137,7 +141,18 @@ export async function runCodexAppServerSideQuestion(
   }
 
   const pluginConfig = readCodexPluginConfig(options.pluginConfig);
-  const appServer = resolveCodexAppServerRuntimeOptions({ pluginConfig });
+  const { sessionAgentId } = resolveSessionAgentIds({
+    sessionKey: params.sessionKey,
+    config: params.cfg,
+    agentId: params.agentId,
+  });
+  const appServer = resolveCodexAppServerRuntimeOptions({
+    pluginConfig,
+    execPolicy: resolveOpenClawExecPolicyForCodexAppServer({
+      config: params.cfg,
+      agentId: sessionAgentId,
+    }),
+  });
   const authProfileId = params.authProfileId ?? binding.authProfileId;
   const client = await getSharedCodexAppServerClient({
     startOptions: appServer.start,
@@ -166,11 +181,6 @@ export async function runCodexAppServerSideQuestion(
   try {
     const cwd = binding.cwd || params.workspaceDir || process.cwd();
     const sideRunParams = buildSideRunAttemptParams(params, { cwd, authProfileId });
-    const { sessionAgentId } = resolveSessionAgentIds({
-      sessionKey: params.sessionKey,
-      config: params.cfg,
-      agentId: params.agentId,
-    });
     const toolBridge = await createCodexSideToolBridge({
       params,
       cwd,

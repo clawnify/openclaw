@@ -5,6 +5,7 @@ import {
   isActiveHarnessContextEngine,
   resolveCompactionTimeoutMs,
   resolveContextEngineOwnerPluginId,
+  resolveSessionAgentIds,
   runHarnessContextEngineMaintenance,
   type CompactEmbeddedPiSessionParams,
   type EmbeddedPiCompactResult,
@@ -14,7 +15,10 @@ import {
   type CodexAppServerClientFactory,
 } from "./client-factory.js";
 import type { CodexAppServerClient, CodexServerNotificationHandler } from "./client.js";
-import { resolveCodexAppServerRuntimeOptions } from "./config.js";
+import {
+  resolveCodexAppServerRuntimeOptions,
+  resolveOpenClawExecPolicyForCodexAppServer,
+} from "./config.js";
 import { isJsonObject, type CodexServerNotification, type JsonObject } from "./protocol.js";
 import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
 import { clearCodexAppServerBinding, readCodexAppServerBinding } from "./session-binding.js";
@@ -334,16 +338,17 @@ async function compactCodexNativeThread(
   params: CompactEmbeddedPiSessionParams,
   options: { pluginConfig?: unknown; clientFactory?: CodexAppServerClientFactory } = {},
 ): Promise<EmbeddedPiCompactResult | undefined> {
-  const nativeExecutionBlock = resolveCodexNativeExecutionBlock({
+  const { sessionAgentId } = resolveSessionAgentIds({
+    sessionKey: params.sessionKey,
     config: params.config,
-    sessionKey: params.sandboxSessionKey ?? params.sessionKey,
-    sessionId: params.sessionId,
-    surface: "native compaction",
   });
-  if (nativeExecutionBlock) {
-    return { ok: false, compacted: false, reason: nativeExecutionBlock };
-  }
-  const appServer = resolveCodexAppServerRuntimeOptions({ pluginConfig: options.pluginConfig });
+  const appServer = resolveCodexAppServerRuntimeOptions({
+    pluginConfig: options.pluginConfig,
+    execPolicy: resolveOpenClawExecPolicyForCodexAppServer({
+      config: params.config,
+      agentId: sessionAgentId,
+    }),
+  });
   const binding = await readCodexAppServerBinding(params.sessionFile, { config: params.config });
   if (!binding?.threadId) {
     return failedCodexThreadBindingCompactionResult(params, {

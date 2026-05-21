@@ -468,61 +468,37 @@ describe("runCodexAppServerSideQuestion", () => {
     expect(toolOptions).toHaveProperty("requireExplicitMessageTarget", true);
   });
 
-  it("returns side-thread completions scoped by nested turn thread id", async () => {
+  it("applies configured exec mode policy when the binding has no stored policy", async () => {
     const client = createFakeClient();
-    client.request.mockImplementation(async (method: string) => {
-      if (method === "thread/fork") {
-        return threadResult("side-thread");
-      }
-      if (method === "thread/inject_items") {
-        return {};
-      }
-      if (method === "turn/start") {
-        queueMicrotask(() =>
-          client.emit(turnCompletedWithNestedThread("side-thread", "turn-1", "Nested answer.")),
-        );
-        return turnStartResult("turn-1");
-      }
-      if (method === "thread/unsubscribe" || method === "turn/interrupt") {
-        return {};
-      }
-      throw new Error(`unexpected request: ${method}`);
-    });
     getSharedCodexAppServerClientMock.mockResolvedValue(client);
+    readCodexAppServerBindingMock.mockResolvedValueOnce({
+      schemaVersion: 1,
+      threadId: "parent-thread",
+      sessionFile: "/tmp/session-1.jsonl",
+      cwd: "/tmp/workspace",
+      authProfileId: "openai-codex:work",
+      model: "gpt-5.5",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    });
 
-    const result = await runCodexAppServerSideQuestion(sideParams());
-
-    expect(result).toEqual({ text: "Nested answer." });
-  });
-
-  it("rejects /btw before forking when the current OpenClaw session is sandboxed", async () => {
-    await expect(
-      runCodexAppServerSideQuestion(
-        sideParams({
-          cfg: { agents: { defaults: { sandbox: { mode: "all" } } } } as never,
-          sessionKey: "sandboxed-session",
-        }),
-      ),
-    ).rejects.toThrow(
-      "Codex-native /btw side-question mode is unavailable because OpenClaw sandboxing is active for this session.",
+    await runCodexAppServerSideQuestion(
+      sideParams({
+        sessionKey: "agent:main:session-1",
+        cfg: {
+          tools: {
+            exec: {
+              mode: "ask",
+            },
+          },
+        } as never,
+      }),
     );
 
-    expect(getSharedCodexAppServerClientMock).not.toHaveBeenCalled();
-  });
-
-  it("rejects /btw before forking when exec host=node is active", async () => {
-    await expect(
-      runCodexAppServerSideQuestion(
-        sideParams({
-          cfg: { tools: { exec: { host: "node", node: "worker-1" } } } as never,
-          sessionKey: "node-session",
-        }),
-      ),
-    ).rejects.toThrow(
-      "Codex-native /btw side-question mode is unavailable because OpenClaw exec host=node is active for this session.",
-    );
-
-    expect(getSharedCodexAppServerClientMock).not.toHaveBeenCalled();
+    const forkParams = mockCall(client.request)[1] as Record<string, unknown> | undefined;
+    expect(forkParams?.approvalPolicy).toBe("on-request");
+    expect(forkParams?.sandbox).toBe("workspace-write");
+    expect(forkParams?.approvalsReviewer).toBe("user");
   });
 
   it("installs native hook relay config for opted-in side threads", async () => {
