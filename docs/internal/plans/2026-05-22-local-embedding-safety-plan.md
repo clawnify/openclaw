@@ -54,7 +54,12 @@ or Metal policy for local embeddings, and make degraded memory state visible.
 
 ## Proposed Work
 
-### Phase 1: Safer Local Batch Semantics
+Ship this as one bounded safety fix, not as separate delivery phases. The items
+below are the internal implementation checklist for that fix. The optional
+plugin-contract bridge can drop to a follow-up if it makes the safety PR bigger
+or slower.
+
+### Serialize Local Batch Embeddings
 
 Make local `embedBatch` sequential by default in the existing local provider.
 This is a mitigation, not the crash fix: it reduces concurrent pressure on
@@ -73,7 +78,7 @@ Acceptance:
 - Abort signals are still checked before each item.
 - Existing query and close behavior remains unchanged.
 
-### Phase 2: Explicit CPU Or Metal Policy
+### Add Explicit CPU Or Metal Policy
 
 Add a local embedding runtime policy under `memorySearch.local`.
 
@@ -125,7 +130,7 @@ Acceptance:
 - Docs avoid promising that CPU-only prevents every crash when the installed
   macOS arm64 package is still linked to Metal libraries.
 
-### Phase 3: Gateway-Safe Worker Isolation
+### Isolate Local Embeddings In A Worker
 
 Move local embedding execution out of the Gateway process.
 
@@ -163,7 +168,7 @@ Acceptance:
 - Packaged OpenClaw can locate and start the worker without relying on source
   checkout paths.
 
-### Phase 4: Memory Degradation And Operator Feedback
+### Degrade Memory Cleanly After Worker Failures
 
 Make repeated local embedding failures visible and non-fatal.
 
@@ -189,7 +194,7 @@ Acceptance:
   worker crash or abort.
 - Tests cover degraded status and no accidental cloud fallback.
 
-### Phase 5: QMD Policy And Status Integration
+### Handle QMD As A Separate Subprocess Path
 
 Handle QMD as a separate subprocess-backed path.
 
@@ -208,7 +213,7 @@ Acceptance:
   failure, and lexical-only mode.
 - Tests cover QMD non-zero exits without causing a Gateway crash loop.
 
-### Phase 6: Optional Plugin Contract Bridge
+### Keep The Plugin Contract Bridge Optional
 
 PR #84947 has landed, so the generic `embeddingProviders` contract is available.
 Use it as follow-up wiring after the safety path is proven.
@@ -279,15 +284,16 @@ platform-specific proof.
 - Should Apple Silicon default to CPU-only for local embeddings, or should CPU
   remain an explicit operator choice? Defaulting to CPU-only needs maintainer
   approval because it changes performance expectations.
-- Should the first PR include both worker isolation and GPU policy, or should it
-  land worker isolation first with current `"auto"` behavior preserved?
+- Can the safety PR include worker isolation, GPU policy, status/backoff, and
+  QMD subprocess handling without expanding into a provider-contract migration?
+  If not, cut only the plugin bridge.
 - Which QMD versions expose enough CPU/Metal controls for OpenClaw to pass policy
   through reliably?
 - What is the exact backoff policy after repeated worker crashes?
-- Should the `embeddingProviders` bridge land in the safety PR or remain a small
-  follow-up after Apple Silicon proof?
+- Should the `embeddingProviders` bridge be included only if it stays tiny and
+  additive, or should it remain a small follow-up after Apple Silicon proof?
 
-## Suggested Implementation Order
+## One-PR Checklist
 
 1. Serialize local `embedBatch`.
 2. Add local embedding worker isolation.
@@ -296,6 +302,6 @@ platform-specific proof.
 4. Add memory degradation and status reporting.
 5. Add QMD policy/status handling as a separate subprocess path.
 6. Run Apple Silicon proof.
-7. Bridge to the `embeddingProviders` contract only if it stays additive and
+7. Update #44202 with exact commands, host class, result, and remaining gaps.
+8. Bridge to the `embeddingProviders` contract only if it stays additive and
    small; otherwise leave it as a follow-up.
-8. Update #44202 with exact commands, host class, result, and remaining gaps.
