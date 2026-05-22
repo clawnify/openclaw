@@ -543,6 +543,8 @@ export async function processGatewayAllowlist(
         approvedByAsk,
         deniedReason,
         requiresInlineEvalApproval,
+        requiresExplicitApproval:
+          requiresSecurityAuditSuppressionApproval || requiresMutableScriptApproval,
       });
 
       if (strictInlineEvalDecision.deniedReason || !strictInlineEvalDecision.approvedByAsk) {
@@ -627,6 +629,8 @@ export async function processGatewayAllowlist(
         approvedByAsk,
         deniedReason,
         requiresInlineEvalApproval,
+        requiresExplicitApproval:
+          requiresSecurityAuditSuppressionApproval || requiresMutableScriptApproval,
       }));
 
       if (

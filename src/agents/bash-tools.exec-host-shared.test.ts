@@ -330,6 +330,23 @@ describe("enforceStrictInlineEvalApprovalBoundary", () => {
     });
   });
 
+  it("denies timeout-based fallback when another explicit approval guard is required", () => {
+    const params = {
+      baseDecision: { timedOut: true },
+      approvedByAsk: true,
+      deniedReason: null,
+      requiresInlineEvalApproval: false,
+      requiresExplicitApproval: true,
+    } satisfies Parameters<typeof enforceStrictInlineEvalApprovalBoundary>[0] & {
+      requiresExplicitApproval: true;
+    };
+
+    expect(enforceStrictInlineEvalApprovalBoundary(params)).toEqual({
+      approvedByAsk: false,
+      deniedReason: "approval-timeout",
+    });
+  });
+
   it("keeps explicit approvals intact for strict inline-eval commands", () => {
     expect(
       enforceStrictInlineEvalApprovalBoundary({

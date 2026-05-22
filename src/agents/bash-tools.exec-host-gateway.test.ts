@@ -95,8 +95,18 @@ const sendExecApprovalFollowupResultMock = vi.hoisted(() =>
 );
 const enforceStrictInlineEvalApprovalBoundaryMock = vi.hoisted(() =>
   vi.fn<StrictInlineEvalBoundary>((value) => ({
-    approvedByAsk: value.approvedByAsk,
-    deniedReason: value.deniedReason,
+    approvedByAsk:
+      value.baseDecision.timedOut &&
+      value.approvedByAsk &&
+      (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+        ? false
+        : value.approvedByAsk,
+    deniedReason:
+      value.baseDecision.timedOut &&
+      value.approvedByAsk &&
+      (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+        ? (value.deniedReason ?? "approval-timeout")
+        : value.deniedReason,
   })),
 );
 const detectInterpreterInlineEvalArgvMock = vi.hoisted(() =>
@@ -271,8 +281,18 @@ describe("processGatewayAllowlist", () => {
     sendExecApprovalFollowupResultMock.mockReset();
     enforceStrictInlineEvalApprovalBoundaryMock.mockReset();
     enforceStrictInlineEvalApprovalBoundaryMock.mockImplementation((value) => ({
-      approvedByAsk: value.approvedByAsk,
-      deniedReason: value.deniedReason,
+      approvedByAsk:
+        value.baseDecision.timedOut &&
+        value.approvedByAsk &&
+        (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+          ? false
+          : value.approvedByAsk,
+      deniedReason:
+        value.baseDecision.timedOut &&
+        value.approvedByAsk &&
+        (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+          ? (value.deniedReason ?? "approval-timeout")
+          : value.deniedReason,
     }));
     detectInterpreterInlineEvalArgvMock.mockReset();
     detectInterpreterInlineEvalArgvMock.mockReturnValue(null);
@@ -1123,5 +1143,50 @@ EOF`,
     });
     expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledTimes(1);
     expect(runExecProcessMock).not.toHaveBeenCalled();
+  });
+
+  it("denies timed-out mutable script approvals instead of auto-running them", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-timeout-script-"));
+    try {
+      const scriptPath = path.join(tmp, "script.js");
+      const command = `node ${scriptPath}`;
+      fs.writeFileSync(scriptPath, 'console.log("reviewed");\n');
+      resolveExecHostApprovalContextMock.mockReturnValue({
+        approvals: { allowlist: [], file: { version: 1, agents: {} } },
+        hostSecurity: "full",
+        hostAsk: "on-miss",
+        askFallback: "full",
+      });
+      evaluateShellAllowlistMock.mockReturnValue({
+        allowlistMatches: [],
+        analysisOk: true,
+        allowlistSatisfied: true,
+        segments: [{ resolution: null, argv: ["node", scriptPath] }],
+        segmentAllowlistEntries: [],
+      });
+      resolveApprovalDecisionOrUndefinedMock.mockResolvedValue(null);
+      createExecApprovalDecisionStateMock.mockReturnValue({
+        baseDecision: { timedOut: true },
+        approvedByAsk: true,
+        deniedReason: null,
+      });
+
+      const result = await runGatewayAllowlist({
+        command,
+        ask: "on-miss",
+      });
+
+      expect(result.pendingResult?.details.status).toBe("approval-pending");
+      await vi.waitFor(() => {
+        expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+          null,
+          `Exec denied (gateway id=req-1, approval-timeout): ${command}`,
+        );
+      });
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledTimes(1);
+      expect(runExecProcessMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

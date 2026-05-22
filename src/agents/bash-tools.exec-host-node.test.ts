@@ -58,8 +58,18 @@ const buildExecApprovalPendingToolResultMock = vi.hoisted(() => vi.fn());
 const sendExecApprovalFollowupResultMock = vi.hoisted(() => vi.fn(async () => undefined));
 const enforceStrictInlineEvalApprovalBoundaryMock = vi.hoisted(() =>
   vi.fn<StrictInlineEvalBoundary>((value) => ({
-    approvedByAsk: value.approvedByAsk,
-    deniedReason: value.deniedReason,
+    approvedByAsk:
+      value.baseDecision.timedOut &&
+      value.approvedByAsk &&
+      (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+        ? false
+        : value.approvedByAsk,
+    deniedReason:
+      value.baseDecision.timedOut &&
+      value.approvedByAsk &&
+      (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+        ? (value.deniedReason ?? "approval-timeout")
+        : value.deniedReason,
   })),
 );
 const registerExecApprovalRequestForHostOrThrowMock = vi.hoisted(() =>
@@ -317,8 +327,18 @@ describe("executeNodeHostCommand", () => {
     sendExecApprovalFollowupResultMock.mockReset();
     enforceStrictInlineEvalApprovalBoundaryMock.mockReset();
     enforceStrictInlineEvalApprovalBoundaryMock.mockImplementation((value) => ({
-      approvedByAsk: value.approvedByAsk,
-      deniedReason: value.deniedReason,
+      approvedByAsk:
+        value.baseDecision.timedOut &&
+        value.approvedByAsk &&
+        (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+          ? false
+          : value.approvedByAsk,
+      deniedReason:
+        value.baseDecision.timedOut &&
+        value.approvedByAsk &&
+        (value.requiresInlineEvalApproval || value.requiresExplicitApproval === true)
+          ? (value.deniedReason ?? "approval-timeout")
+          : value.deniedReason,
     }));
     detectInterpreterInlineEvalArgvMock.mockReset();
     detectInterpreterInlineEvalArgvMock.mockReturnValue(null);
@@ -1067,5 +1087,60 @@ describe("executeNodeHostCommand", () => {
       );
     });
     expect(callGatewayToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies timed-out mutable script approvals instead of invoking the node", async () => {
+    resolveApprovalDecisionOrUndefinedMock.mockResolvedValue(null);
+    createExecApprovalDecisionStateMock.mockReturnValue({
+      baseDecision: { timedOut: true },
+      approvedByAsk: true,
+      deniedReason: null,
+    });
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "on-miss",
+      askFallback: "full",
+    });
+    parsePreparedSystemRunPayloadMock.mockReturnValue({
+      plan: {
+        ...preparedPlan,
+        argv: ["node", "/tmp/work/script.js"],
+        commandText: "node /tmp/work/script.js",
+        commandPreview: "node /tmp/work/script.js",
+        mutableFileOperand: {
+          argvIndex: 1,
+          path: "/tmp/work/script.js",
+          sha256: "abc123",
+        },
+      },
+    });
+
+    const result = await executeNodeHostCommand({
+      command: "node /tmp/work/script.js",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "on-miss",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      agentId: "requested-agent",
+      sessionKey: "requested-session",
+    });
+
+    expect(result.details?.status).toBe("approval-pending");
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec denied (node=node-1 id=approval-1, approval-timeout): node /tmp/work/script.js",
+      );
+    });
+    const systemRunCalls = callGatewayToolMock.mock.calls.filter(
+      ([method, , params]) =>
+        method === "node.invoke" &&
+        (params as MockNodeInvokeParams | undefined)?.command === "system.run",
+    );
+    expect(systemRunCalls).toHaveLength(0);
   });
 });

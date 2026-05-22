@@ -206,6 +206,8 @@ export async function executeNodeHostCommand(
           approvedByAsk,
           deniedReason,
           requiresInlineEvalApproval: inlineEvalHit !== null,
+          requiresExplicitApproval:
+            requiresSecurityAuditSuppressionApproval || requiresMutableScriptApproval,
         });
         if (strictInlineEvalDecision.deniedReason || !strictInlineEvalDecision.approvedByAsk) {
           throw new Error(
@@ -274,6 +276,8 @@ export async function executeNodeHostCommand(
               approvedByAsk,
               deniedReason,
               requiresInlineEvalApproval: inlineEvalHit !== null,
+              requiresExplicitApproval:
+                requiresSecurityAuditSuppressionApproval || requiresMutableScriptApproval,
             },
           ));
           if (deniedReason) {
