@@ -239,10 +239,6 @@ operators can switch to Hetzner when AWS capacity is slow or unavailable. Use
 this lane when you want "a Linux desktop with Slack and a claw running" instead
 of only a bot-to-bot Slack transcript.
 
-Generic maintainer PR desktop leases are outside Mantis. See
-[Crabbox PR desktop leases](/concepts/crabbox-pr-desktop-leases) for the
-shared Linux and macOS inspection handoff workflow.
-
 `Mantis Telegram Live` wraps the existing Telegram live QA lane in the same PR
 evidence pipeline. It checks out the trusted candidate ref in a separate
 worktree, runs `pnpm openclaw qa telegram --credential-source convex
@@ -615,7 +611,7 @@ Recommended secret names:
 
 Long term, the Convex credential pool should remain the normal source for live
 transport credentials. GitHub secrets bootstrap the broker and fallback lanes.
-The Discord status-reactions workflow maps the Crabbox secrets back to
+The Discord status-reactions workflow maps the Mantis Crabbox secrets back to
 the `CRABBOX_COORDINATOR` and `CRABBOX_COORDINATOR_TOKEN` environment variables
 that the Crabbox CLI expects. The plain `CRABBOX_*` GitHub secret names remain
 accepted as a compatibility fallback.
