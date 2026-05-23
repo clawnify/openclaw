@@ -154,7 +154,7 @@ jobs:
       - name: Checkout trusted workflow helper
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ github.ref_name }}
           path: workflow
           fetch-depth: 1
@@ -175,7 +175,7 @@ jobs:
         if: steps.fast_ref.outputs.fallback == 'true'
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ inputs.ref }}
           path: source
           fetch-depth: 0
@@ -474,7 +474,7 @@ jobs:
       - name: Checkout trusted workflow ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
@@ -763,7 +763,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -834,7 +834,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -899,7 +899,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -1014,7 +1014,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -1066,7 +1066,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -1145,7 +1145,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -1240,7 +1240,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -1338,7 +1338,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
@@ -1433,7 +1433,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ needs.resolve_target.outputs.revision }}
           fetch-depth: 1
 
