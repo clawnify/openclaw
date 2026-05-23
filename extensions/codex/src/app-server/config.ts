@@ -4,7 +4,7 @@ import { hostname as readHostName } from "node:os";
 import {
   resolveExecApprovalsFromFile,
   type ExecApprovalsFile,
-} from "openclaw/plugin-sdk/infra-runtime";
+} from "openclaw/plugin-sdk/exec-approvals-runtime";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import { z } from "zod";
 import type { CodexSandboxPolicy, CodexServiceTier } from "./protocol.js";

@@ -1,6 +1,6 @@
 import { formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveSessionAgentIds } from "openclaw/plugin-sdk/agent-runtime";
-import { loadExecApprovals } from "openclaw/plugin-sdk/infra-runtime";
+import { loadExecApprovals } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import type {
   PluginConversationBindingResolvedEvent,
   PluginHookInboundClaimContext,
