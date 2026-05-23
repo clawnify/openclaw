@@ -148,6 +148,7 @@ export async function executeNodeHostCommand(
       params.autoReview === true &&
       hostAsk !== "always" &&
       analysisOk &&
+      autoReviewArgv !== undefined &&
       inlineEvalHit === null &&
       !requiresSecurityAuditSuppressionApproval &&
       !requiresMutableScriptApproval

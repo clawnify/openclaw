@@ -739,7 +739,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     });
   });
 
-  it("forces guardian-reviewed local execution for auto mode over legacy app-server policy", () => {
+  it("preserves explicit app-server policy fields for auto mode", () => {
     const runtime = resolveRuntimeForTest({
       pluginConfig: {
         appServer: {
@@ -756,9 +756,9 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     });
 
     expectRuntimePolicy(runtime, {
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      approvalsReviewer: "auto_review",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      approvalsReviewer: "user",
     });
   });
 
@@ -786,12 +786,12 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     });
 
     expectRuntimePolicy(configRuntime, {
-      approvalPolicy: "on-request",
+      approvalPolicy: "never",
       sandbox: "read-only",
-      approvalsReviewer: "auto_review",
+      approvalsReviewer: "user",
     });
     expectRuntimePolicy(envRuntime, {
-      approvalPolicy: "on-request",
+      approvalPolicy: "never",
       sandbox: "read-only",
       approvalsReviewer: "auto_review",
     });
@@ -1039,7 +1039,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     });
   });
 
-  it("forces normalized OpenClaw auto mode over explicit app-server policy fields", () => {
+  it("preserves explicit app-server policy fields for normalized OpenClaw auto mode", () => {
     const runtime = resolveRuntimeForTest({
       pluginConfig: {
         appServer: {
@@ -1052,9 +1052,9 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     });
 
     expectRuntimePolicy(runtime, {
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      approvalsReviewer: "auto_review",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      approvalsReviewer: "user",
     });
   });
 

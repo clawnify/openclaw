@@ -433,10 +433,18 @@ export async function processGatewayAllowlist(
   }
 
   if (requiresAsk) {
+    const [autoReviewSegment] = allowlistEval.segments;
+    const autoReviewArgv =
+      allowlistEval.segments.length === 1 &&
+      (autoReviewSegment?.raw === undefined ||
+        autoReviewSegment.raw.trim() === params.command.trim())
+        ? autoReviewSegment.argv
+        : undefined;
     const canAutoReviewApprovalMiss =
       params.autoReview === true &&
       hostAsk !== "always" &&
       analysisOk &&
+      autoReviewArgv !== undefined &&
       !requiresAllowlistPlanApproval &&
       !requiresHeredocApproval &&
       !requiresInlineEvalApproval &&
@@ -444,13 +452,6 @@ export async function processGatewayAllowlist(
       !requiresMutableScriptApproval;
     if (canAutoReviewApprovalMiss) {
       const reviewer = params.autoReviewer ?? defaultExecAutoReviewer;
-      const [autoReviewSegment] = allowlistEval.segments;
-      const autoReviewArgv =
-        allowlistEval.segments.length === 1 &&
-        (autoReviewSegment?.raw === undefined ||
-          autoReviewSegment.raw.trim() === params.command.trim())
-          ? autoReviewSegment.argv
-          : undefined;
       const decision = await reviewer({
         command: params.command,
         argv: autoReviewArgv,

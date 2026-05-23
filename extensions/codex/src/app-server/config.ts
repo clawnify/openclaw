@@ -415,8 +415,12 @@ export function resolveCodexAppServerRuntimeOptions(
   assertCodexAppServerAllowedForOpenClawExecMode(execMode);
   const explicitPolicyMode =
     resolvePolicyMode(config.mode) ?? resolvePolicyMode(env.OPENCLAW_CODEX_APP_SERVER_MODE);
+  const explicitApprovalPolicy =
+    resolveApprovalPolicy(config.approvalPolicy) ??
+    resolveApprovalPolicy(env.OPENCLAW_CODEX_APP_SERVER_APPROVAL_POLICY);
   const configuredSandbox =
     resolveSandbox(config.sandbox) ?? resolveSandbox(env.OPENCLAW_CODEX_APP_SERVER_SANDBOX);
+  const explicitApprovalsReviewer = resolveApprovalsReviewer(config.approvalsReviewer);
   const normalizedPolicyMode = resolveCodexPolicyModeForOpenClawExecMode(execMode);
   const ignoreLegacyYoloPolicyMode =
     normalizedPolicyMode === "guardian" && explicitPolicyMode === "yolo";
@@ -444,20 +448,29 @@ export function resolveCodexAppServerRuntimeOptions(
           platform: params.platform,
           hostName: params.hostName,
         });
+  const preserveExplicitAutoPolicy = forceGuardianReviewer;
   const forcedPolicy = forceRuntimePolicy
     ? {
-        approvalPolicy: defaultPolicy?.approvalPolicy ?? "on-request",
-        sandbox: forceDangerFullAccessSandbox
-          ? selectForcedDangerFullAccessSandbox({
-              defaultPolicy,
-              openClawSandboxActive: params.openClawSandboxActive === true,
-            })
-          : selectForcedPromptingSandbox({
-              configuredSandbox,
-              defaultSandbox: defaultPolicy?.sandbox,
-            }),
+        approvalPolicy:
+          preserveExplicitAutoPolicy && explicitApprovalPolicy !== undefined
+            ? undefined
+            : (defaultPolicy?.approvalPolicy ?? "on-request"),
+        sandbox:
+          preserveExplicitAutoPolicy && configuredSandbox !== undefined
+            ? undefined
+            : forceDangerFullAccessSandbox
+              ? selectForcedDangerFullAccessSandbox({
+                  defaultPolicy,
+                  openClawSandboxActive: params.openClawSandboxActive === true,
+                })
+              : selectForcedPromptingSandbox({
+                  configuredSandbox,
+                  defaultSandbox: defaultPolicy?.sandbox,
+                }),
         approvalsReviewer:
-          defaultPolicy?.approvalsReviewer ?? (forceUserReviewer ? "user" : "auto_review"),
+          preserveExplicitAutoPolicy && explicitApprovalsReviewer !== undefined
+            ? undefined
+            : (defaultPolicy?.approvalsReviewer ?? (forceUserReviewer ? "user" : "auto_review")),
       }
     : undefined;
   const policyMode = ignoreLegacyYoloPolicyMode
@@ -497,8 +510,7 @@ export function resolveCodexAppServerRuntimeOptions(
       : {}),
     approvalPolicy:
       forcedPolicy?.approvalPolicy ??
-      resolveApprovalPolicy(config.approvalPolicy) ??
-      resolveApprovalPolicy(env.OPENCLAW_CODEX_APP_SERVER_APPROVAL_POLICY) ??
+      explicitApprovalPolicy ??
       defaultPolicy?.approvalPolicy ??
       (policyMode === "guardian" ? "on-request" : "never"),
     sandbox:
@@ -508,7 +520,7 @@ export function resolveCodexAppServerRuntimeOptions(
       (policyMode === "guardian" ? "workspace-write" : "danger-full-access"),
     approvalsReviewer:
       forcedPolicy?.approvalsReviewer ??
-      resolveApprovalsReviewer(config.approvalsReviewer) ??
+      explicitApprovalsReviewer ??
       defaultPolicy?.approvalsReviewer ??
       (policyMode === "guardian" ? "auto_review" : "user"),
     ...(serviceTier ? { serviceTier } : {}),

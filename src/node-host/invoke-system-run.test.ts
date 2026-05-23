@@ -871,7 +871,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
   );
 
   it.runIf(process.platform !== "win32")(
-    "does not send first-segment argv for compound system.run auto-review commands",
+    "keeps compound system.run commands on explicit approval in auto mode",
     async () => {
       const tmp = createFixtureDir("openclaw-system-run-compound-auto-review-");
       setRuntimeConfigSnapshot({
@@ -888,7 +888,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
           risk: "low",
         }));
         const runCommand = vi.fn(async () => createLocalRunResult("auto-reviewed"));
-        await runSystemInvoke({
+        const invoke = await runSystemInvoke({
           preferMacAppExecHost: false,
           command: ["/bin/sh", "-c", "pwd; rm -rf dist"],
           cwd: tmp,
@@ -898,15 +898,12 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
           autoReviewer,
         });
 
-        expect(autoReviewer).toHaveBeenCalledTimes(1);
-        expect(autoReviewer).toHaveBeenCalledWith(
-          expect.objectContaining({
-            command: '/bin/sh -c "pwd; rm -rf dist"',
-            argv: undefined,
-            host: "node",
-            reason: "approval-required",
-          }),
-        );
+        expect(autoReviewer).not.toHaveBeenCalled();
+        expect(runCommand).not.toHaveBeenCalled();
+        expectInvokeErrorMessage(invoke.sendInvokeResult, {
+          message: "SYSTEM_RUN_DENIED: approval required",
+          exact: true,
+        });
       } finally {
         clearRuntimeConfigSnapshot();
       }

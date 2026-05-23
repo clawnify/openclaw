@@ -604,10 +604,19 @@ async function evaluateSystemRunPolicyPhase(
   }
 
   if (!policy.allowed) {
+    const [autoReviewSegment] = segments;
+    const autoReviewArgv =
+      segments.length === 1 &&
+      (parsed.shellPayload === null ||
+        (autoReviewSegment?.raw !== undefined &&
+          autoReviewSegment.raw.trim() === parsed.shellPayload.trim()))
+        ? autoReviewSegment?.argv
+        : undefined;
     const canAutoReviewApprovalMiss =
       modePolicy.autoReview &&
       ask !== "always" &&
       analysisOk &&
+      autoReviewArgv !== undefined &&
       inlineEvalHit === null &&
       !securityAuditSuppressionRequiresApproval &&
       policy.eventReason !== "security=deny";
@@ -619,14 +628,6 @@ async function evaluateSystemRunPolicyPhase(
         agentExec,
         globalExec,
       });
-      const [autoReviewSegment] = segments;
-      const autoReviewArgv =
-        segments.length === 1 &&
-        (parsed.shellPayload === null ||
-          (autoReviewSegment?.raw !== undefined &&
-            autoReviewSegment.raw.trim() === parsed.shellPayload.trim()))
-          ? autoReviewSegment?.argv
-          : undefined;
       const decision = await reviewer({
         command: parsed.commandText,
         argv: autoReviewArgv,

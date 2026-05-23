@@ -663,7 +663,7 @@ EOF`,
     expect(result.pendingResult?.details.status).toBe("approval-pending");
   });
 
-  it("does not send first-segment argv for compound auto-review commands", async () => {
+  it("keeps compound commands on explicit approval in auto-review mode", async () => {
     evaluateShellAllowlistMock.mockReturnValue({
       allowlistMatches: [],
       analysisOk: true,
@@ -677,19 +677,15 @@ EOF`,
     hasDurableExecApprovalMock.mockReturnValue(false);
     requiresExecApprovalMock.mockReturnValue(true);
 
-    await runGatewayAllowlist({
+    const result = await runGatewayAllowlist({
       command: "pwd; rm -rf dist",
       ask: "on-miss",
       autoReview: true,
     });
 
-    expect(defaultExecAutoReviewerMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: "pwd; rm -rf dist",
-        argv: undefined,
-        host: "gateway",
-      }),
-    );
+    expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
   });
 
   it("keeps mutable script operands on explicit approval in auto-review mode", async () => {

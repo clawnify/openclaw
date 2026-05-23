@@ -543,7 +543,7 @@ describe("executeNodeHostCommand", () => {
     expect(result.details?.status).toBe("approval-pending");
   });
 
-  it("does not send first-segment argv for compound node auto-review commands", async () => {
+  it("keeps compound node commands on explicit approval in auto-review mode", async () => {
     resolveExecHostApprovalContextMock.mockReturnValue({
       approvals: { allowlist: [], file: { version: 1, agents: {} } },
       hostSecurity: "allowlist",
@@ -584,14 +584,9 @@ describe("executeNodeHostCommand", () => {
       sessionKey: "requested-session",
     });
 
-    expect(defaultExecAutoReviewerMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: "pwd; rm -rf dist",
-        argv: undefined,
-        host: "node",
-      }),
-    );
-    expect(result.details?.status).toBe("completed");
+    expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(result.details?.status).toBe("approval-pending");
   });
 
   it("does not build a human approval prompt for node auto-review allows", async () => {
