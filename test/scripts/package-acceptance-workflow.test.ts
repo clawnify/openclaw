@@ -96,6 +96,8 @@ describe("package acceptance workflow", () => {
     expect(setupPnpmAction).not.toContain("version: ${{ inputs.pnpm-version }}");
 
     const setupNodeAction = readFileSync(".github/actions/setup-node-env/action.yml", "utf8");
+    expect(setupNodeAction).toContain("Normalize container toolcache");
+    expect(setupNodeAction).toContain("ln -s /__t /opt/hostedtoolcache");
     expect(setupNodeAction).toContain("use-actions-cache: ${{ inputs.use-actions-cache }}");
 
     for (const workflowPath of workflowPaths()) {
