@@ -1154,6 +1154,18 @@ grep -qx -- "OPENCLAW_E2E_COMMAND_TIMEOUT=23s" "$TMPDIR/package-args"
     );
   });
 
+  it("accepts config-only channel status during npm onboarding smoke", () => {
+    const runner = readFileSync(NPM_ONBOARD_CHANNEL_AGENT_DOCKER_E2E_PATH, "utf8");
+
+    expect(runner).toContain(
+      "if ! openclaw channels status --json >/tmp/openclaw-channels-status.json 2>/tmp/openclaw-channels-status.err; then",
+    );
+    expect(runner).toContain("if [ ! -s /tmp/openclaw-channels-status.json ]; then");
+    expect(runner).toContain(
+      'assert-status-surfaces "$CHANNEL" /tmp/openclaw-channels-status.json /tmp/openclaw-status.txt',
+    );
+  });
+
   it("kills timed Docker scenario runners after the grace period", () => {
     const multiNode = readFileSync(MULTI_NODE_UPDATE_DOCKER_E2E_PATH, "utf8");
     const upgradeSurvivor = readFileSync(UPGRADE_SURVIVOR_DOCKER_E2E_PATH, "utf8");
