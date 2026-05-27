@@ -608,13 +608,14 @@ async function runToolResultCapHealth(ctx: DoctorHealthFlowContext): Promise<voi
 }
 
 async function runRuntimeToolSchemasHealth(ctx: DoctorHealthFlowContext): Promise<void> {
-  const findings = await ctx.runtime.collectRuntimeToolSchemaFindings(ctx.cfg);
+  const { collectRuntimeToolSchemaFindings } = await import("./doctor-core-checks.runtime.js");
+  const findings = await collectRuntimeToolSchemaFindings(ctx.cfg);
   if (findings.length === 0) {
     return;
   }
 
   const { note } = await import("../terminal/note.js");
-  const lines = findings.flatMap((finding) => [
+  const lines = findings.flatMap((finding: HealthFinding) => [
     finding.message,
     ...(finding.path ? [`Path: ${finding.path}`] : []),
     ...(finding.target ? [`Target: ${finding.target}`] : []),
