@@ -7,7 +7,7 @@
 - Heartbeat happy path: Codex receives the structured `heartbeat_respond` dynamic tool in the searchable catalog instead of the initial tool context.
 - The heartbeat tool still carries the notify/no-notify decision, outcome, summary, and optional notification text instead of relying only on final-text parsing.
 - This captures the OpenClaw-owned Codex app-server inputs and reconstructs the stable Codex model/permission layers from committed Codex prompt fixtures.
-- This also simulates Codex workspace bootstrap routing: `TOOLS.md` as inherited developer instructions, `SOUL.md`, `IDENTITY.md`, and `USER.md` as turn-scoped collaboration instructions, `MEMORY.md` in turn input, and `HEARTBEAT.md` as a heartbeat-only file pointer.
+- This also simulates Codex workspace bootstrap routing: `SOUL.md`, `IDENTITY.md`, `TOOLS.md`, and `USER.md` as Codex developer instructions, `MEMORY.md` in turn input, and `HEARTBEAT.md` as a heartbeat-only file pointer.
 
 ## Scenario Metadata
 
@@ -22,12 +22,13 @@
   "runtime": "codex_app_server",
   "simulatedHeartbeatWorkspaceFile": "/tmp/openclaw-happy-path/workspace/HEARTBEAT.md",
   "simulatedWorkspaceBootstrapFiles": ["/tmp/openclaw-happy-path/workspace/MEMORY.md"],
-  "simulatedWorkspaceDeveloperInstructionFiles": ["/tmp/openclaw-happy-path/workspace/TOOLS.md"],
-  "simulatedWorkspaceTurnScopedDeveloperInstructionFiles": [
-    "/tmp/openclaw-happy-path/workspace/IDENTITY.md",
+  "simulatedWorkspaceDeveloperInstructionFiles": [
     "/tmp/openclaw-happy-path/workspace/SOUL.md",
-    "/tmp/openclaw-happy-path/workspace/USER.md"
+    "/tmp/openclaw-happy-path/workspace/IDENTITY.md",
+    "/tmp/openclaw-happy-path/workspace/USER.md",
+    "/tmp/openclaw-happy-path/workspace/TOOLS.md"
   ],
+  "simulatedWorkspaceTurnScopedDeveloperInstructionFiles": [],
   "sourceReplyDeliveryMode": "message_tool_only",
   "toolSnapshot": "codex-dynamic-tools.heartbeat-turn.json",
   "trigger": "heartbeat"
@@ -138,7 +139,7 @@
   "collaborationMode": {
     "mode": "default",
     "settings": {
-      "developer_instructions": "This is an OpenClaw heartbeat turn. Apply these instructions only to this heartbeat wake; ordinary chat turns should stay in Codex Default mode.\n\nWhen you are ready to end the heartbeat, prefer the structured `heartbeat_respond` tool so OpenClaw can record the wake outcome and notification decision. If `heartbeat_respond` is not already available and `tool_search` is available, search for `heartbeat_respond`, load it, then call it. Use `notify=false` when nothing should visibly interrupt the user.\n\n### Heartbeats\n\nUse heartbeats to create useful proactive progress, not chatter.\nTreat a heartbeat as a wake-up: orient, read HEARTBEAT.md when present, then do what is actually useful now.\nIf HEARTBEAT.md assigns concrete or ongoing work, execute its spirit with judgment. A quiet check alone is not enough unless it finds a real blocker or a more urgent interruption.\nAvoid rote loops. Do not confuse orientation with accomplishment.\nPrefer meaningful action over commentary. A good heartbeat often looks like silent progress.\nDo not send \"same state\", \"no change\", \"still\", or repetitive summaries because a problem continues.\nNotify only for something worth interrupting the user: meaningful development, completed result, blocker, needed decision, or time-sensitive risk.\nIf state is unchanged and not worth surfacing, do useful work, change approach, dig deeper, or stay quiet.\n\n## OpenClaw Agent Soul\n\nOpenClaw loaded these workspace instruction files from the active agent workspace. They are the canonical definitions of who you are, how you think and work, and the human you work alongside. Internalize and follow them accordingly.\n\n### /tmp/openclaw-happy-path/workspace/IDENTITY.md\n\n<IDENTITY.md contents will be here>\n\n### /tmp/openclaw-happy-path/workspace/SOUL.md\n\n<SOUL.md contents will be here>\n\n### /tmp/openclaw-happy-path/workspace/USER.md\n\n<USER.md contents will be here>\n\n## OpenClaw Heartbeat Workspace\n\nHEARTBEAT.md exists in the active agent workspace. Read it before proceeding with this heartbeat, then decide what action is appropriate.\n\n- /tmp/openclaw-happy-path/workspace/HEARTBEAT.md",
+      "developer_instructions": "This is an OpenClaw heartbeat turn. Apply these instructions only to this heartbeat wake; ordinary chat turns should stay in Codex Default mode.\n\nWhen you are ready to end the heartbeat, prefer the structured `heartbeat_respond` tool so OpenClaw can record the wake outcome and notification decision. If `heartbeat_respond` is not already available and `tool_search` is available, search for `heartbeat_respond`, load it, then call it. Use `notify=false` when nothing should visibly interrupt the user.\n\n### Heartbeats\n\nUse heartbeats to create useful proactive progress, not chatter.\nTreat a heartbeat as a wake-up: orient, read HEARTBEAT.md when present, then do what is actually useful now.\nIf HEARTBEAT.md assigns concrete or ongoing work, execute its spirit with judgment. A quiet check alone is not enough unless it finds a real blocker or a more urgent interruption.\nAvoid rote loops. Do not confuse orientation with accomplishment.\nPrefer meaningful action over commentary. A good heartbeat often looks like silent progress.\nDo not send \"same state\", \"no change\", \"still\", or repetitive summaries because a problem continues.\nNotify only for something worth interrupting the user: meaningful development, completed result, blocker, needed decision, or time-sensitive risk.\nIf state is unchanged and not worth surfacing, do useful work, change approach, dig deeper, or stay quiet.\n\n## OpenClaw Heartbeat Workspace\n\nHEARTBEAT.md exists in the active agent workspace. Read it before proceeding with this heartbeat, then decide what action is appropriate.\n\n- /tmp/openclaw-happy-path/workspace/HEARTBEAT.md",
       "model": "gpt-5.5",
       "reasoning_effort": "medium"
     }
@@ -163,7 +164,7 @@
 
 ## Reconstructed Model-Bound Prompt Layers
 
-This is the deterministic model-bound layer stack OpenClaw can snapshot for the Codex happy path. It uses a pinned Codex `gpt-5.5` prompt fixture generated from Codex's model catalog/cache shape, then adds the Codex permission developer text, Codex thread config instructions when present, OpenClaw developer instructions, turn-scoped collaboration-mode instructions when OpenClaw provides them, turn input with OpenClaw runtime context, and the OpenClaw dynamic tool catalog. Codex can still add runtime-owned context such as native workspace `AGENTS.md`, environment context, memories, app/plugin instructions, and built-in collaboration-mode instructions inside the Codex runtime.
+This is the deterministic model-bound layer stack OpenClaw can snapshot for the Codex happy path. It uses a pinned Codex `gpt-5.5` prompt fixture generated from Codex's model catalog/cache shape, then adds the Codex permission developer text, Codex thread config instructions when present, OpenClaw developer instructions, turn-scoped collaboration-mode instructions when OpenClaw provides them, turn input, and the OpenClaw dynamic tool catalog. Codex can still add runtime-owned context such as native workspace `AGENTS.md`, environment context, memories, app/plugin instructions, and built-in collaboration-mode instructions inside the Codex runtime.
 
 ### Layer Metadata
 
@@ -206,8 +207,8 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
 ```json
 {
   "codexCollaborationModeDeveloperInstructions": {
-    "chars": 2119,
-    "roughTokens": 530
+    "chars": 1610,
+    "roughTokens": 403
   },
   "codexModelInstructions": {
     "chars": 21335,
@@ -226,20 +227,20 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
     "roughTokens": 10274
   },
   "openClawDeveloperInstructions": {
-    "chars": 1983,
-    "roughTokens": 496
+    "chars": 2234,
+    "roughTokens": 559
   },
   "totalTextOnly": {
-    "chars": 27119,
-    "roughTokens": 6780
+    "chars": 26870,
+    "roughTokens": 6718
   },
   "totalWithDynamicToolsJson": {
-    "chars": 68214,
-    "roughTokens": 17054
+    "chars": 67965,
+    "roughTokens": 16992
   },
   "userInputText": {
-    "chars": 1367,
-    "roughTokens": 342
+    "chars": 1376,
+    "roughTokens": 344
   }
 }
 ```
@@ -451,6 +452,18 @@ You are in a Telegram direct conversation. Normal final replies are private and 
 
 OpenClaw loaded these workspace instruction files from the active agent workspace. Internalize and follow them accordingly.
 
+### /tmp/openclaw-happy-path/workspace/SOUL.md
+
+<SOUL.md contents will be here>
+
+### /tmp/openclaw-happy-path/workspace/IDENTITY.md
+
+<IDENTITY.md contents will be here>
+
+### /tmp/openclaw-happy-path/workspace/USER.md
+
+<USER.md contents will be here>
+
 ### /tmp/openclaw-happy-path/workspace/TOOLS.md
 
 <TOOLS.md contents will be here>
@@ -474,22 +487,6 @@ Do not send "same state", "no change", "still", or repetitive summaries because 
 Notify only for something worth interrupting the user: meaningful development, completed result, blocker, needed decision, or time-sensitive risk.
 If state is unchanged and not worth surfacing, do useful work, change approach, dig deeper, or stay quiet.
 
-## OpenClaw Agent Soul
-
-OpenClaw loaded these workspace instruction files from the active agent workspace. They are the canonical definitions of who you are, how you think and work, and the human you work alongside. Internalize and follow them accordingly.
-
-### /tmp/openclaw-happy-path/workspace/IDENTITY.md
-
-<IDENTITY.md contents will be here>
-
-### /tmp/openclaw-happy-path/workspace/SOUL.md
-
-<SOUL.md contents will be here>
-
-### /tmp/openclaw-happy-path/workspace/USER.md
-
-<USER.md contents will be here>
-
 ## OpenClaw Heartbeat Workspace
 
 HEARTBEAT.md exists in the active agent workspace. Read it before proceeding with this heartbeat, then decide what action is appropriate.
@@ -505,7 +502,7 @@ Treat this OpenClaw-provided context as supporting project/user reference for th
 
 ## OpenClaw Workspace Context
 
-OpenClaw loaded these user-editable workspace files for the current turn. Codex loads AGENTS.md natively. TOOLS.md is provided as inherited Codex developer instructions. SOUL.md, IDENTITY.md, and USER.md are provided as turn-scoped collaboration instructions so native Codex subagents do not inherit them. HEARTBEAT.md is handled by heartbeat collaboration-mode guidance. Those files are not repeated here.
+OpenClaw loaded these user-editable workspace files for the current turn. Codex loads AGENTS.md natively. SOUL.md, IDENTITY.md, TOOLS.md, and USER.md are provided as Codex thread developer instructions so standing workspace guidance is not repeated in every turn. MEMORY.md stays in turn-scoped memory context, and HEARTBEAT.md is handled by heartbeat collaboration-mode guidance. Those files are not repeated here.
 
 # Project Context
 

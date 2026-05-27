@@ -141,8 +141,8 @@ layer stack for Telegram direct, Discord group, and heartbeat turns. That stack
 includes a pinned Codex `gpt-5.5` model prompt fixture generated from Codex's
 model catalog/cache shape, the Codex happy-path permission developer text,
 OpenClaw developer instructions, turn-scoped collaboration-mode instructions
-when OpenClaw provides them, user turn input, and references to the dynamic tool
-specs.
+for cron and heartbeat turns when OpenClaw provides them, user turn input, and
+references to the dynamic tool specs.
 
 Refresh the pinned Codex model prompt fixture with
 `pnpm prompt:snapshots:sync-codex-model`. By default, the script looks for
@@ -178,18 +178,19 @@ prompt surface that matches their lifetime:
 - `BOOTSTRAP.md` (only on brand-new workspaces)
 - `MEMORY.md` when present
 
-On the native Codex harness, OpenClaw avoids repeating stable workspace files
+On the native Codex harness, OpenClaw avoids repeating standing workspace files
 in every user turn. Codex loads `AGENTS.md` through its own project-doc
 discovery. `SOUL.md`, `IDENTITY.md`, `TOOLS.md`, and `USER.md` are forwarded as
-Codex developer instructions. `HEARTBEAT.md` content is not injected; heartbeat
-turns get a collaboration-mode note pointing to the file when it exists and is
-non-empty. `MEMORY.md` content from the configured agent workspace is not pasted
-into every native Codex turn; when memory tools are available for that workspace,
-Codex turns get a small workspace-memory note and should use `memory_search` or
-`memory_get` when durable memory is relevant. If tools are disabled, memory
-search is unavailable, or the active workspace differs from the agent memory
-workspace, `MEMORY.md` falls back to the normal bounded turn-context path. Active
-`BOOTSTRAP.md` content keeps the normal turn-context role for now.
+Codex thread developer instructions. `HEARTBEAT.md` content is not injected;
+heartbeat turns get a collaboration-mode note pointing to the file when it
+exists and is non-empty. `MEMORY.md` stays out of Codex thread developer
+instructions because it changes often: when memory tools are available for that
+workspace, Codex turns get a small workspace-memory note and should use
+`memory_search` or `memory_get` when durable memory is relevant. If tools are
+disabled, memory search is unavailable, or the active workspace differs from the
+agent memory workspace, `MEMORY.md` falls back to the normal bounded
+turn-context path. Active `BOOTSTRAP.md` content keeps the normal turn-context
+role for now.
 
 On non-Codex harnesses, bootstrap files continue to be composed into the
 OpenClaw prompt according to their existing gates. `HEARTBEAT.md` is omitted on
