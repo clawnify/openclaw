@@ -103,10 +103,12 @@ describe("bundled plugin build entries", () => {
 
   it("keeps top-level bundled plugin test helpers out of public-surface entries", () => {
     const entries = listBundledPluginBuildEntries();
+    const artifacts = listBundledPluginPackArtifacts();
 
     expect(entries["extensions/browser/test-support"]).toBeUndefined();
     expect(entries["extensions/comfy/test-helpers"]).toBeUndefined();
     expect(entries["extensions/minimax/provider-http.test-helpers"]).toBeUndefined();
+    expect(artifacts).not.toContain("dist/extensions/browser/test-support.js");
   });
 
   it("discovers repo plugin build entries without directory scans", () => {
