@@ -36,6 +36,7 @@ import {
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   createEmbeddingProvider,
+  resolveEmbeddingProviderAdapterId,
   type EmbeddingProvider,
   type EmbeddingProviderId,
   type EmbeddingProviderRuntime,
@@ -269,13 +270,20 @@ export abstract class MemoryManagerSyncOps {
     vectorReady?: boolean;
   }): MemoryIndexIdentityState {
     const hasProviderOverride = params && "provider" in params;
+    const configuredProvider =
+      this.settings.provider === "none"
+        ? null
+        : {
+            id:
+              resolveEmbeddingProviderAdapterId(this.settings.provider, this.cfg) ??
+              this.settings.provider,
+            model: this.settings.model,
+          };
     const provider = hasProviderOverride
       ? params.provider!
       : this.provider
         ? { id: this.provider.id, model: this.provider.model }
-        : this.settings.provider === "none"
-          ? null
-          : { id: this.settings.provider, model: this.settings.model };
+        : configuredProvider;
     const vectorReady =
       params && "vectorReady" in params
         ? Boolean(params.vectorReady)
