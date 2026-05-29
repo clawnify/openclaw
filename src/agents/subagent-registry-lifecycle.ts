@@ -1153,7 +1153,7 @@ export function createSubagentRegistryLifecycleController(params: {
       typeof completeParams.endedAt === "number" &&
       completeParams.endedAt <= entry.endedAt;
     if (
-      !params.getAuthoritativeLifecycleTimeout &&
+      shouldPreservePublishedExplicitRunTimeout({ entry }) &&
       entry.outcome?.status === "timeout" &&
       typeof entry.endedAt === "number" &&
       completeParams.outcome.status !== "timeout" &&

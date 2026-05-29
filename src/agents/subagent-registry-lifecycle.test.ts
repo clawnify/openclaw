@@ -748,11 +748,12 @@ describe("subagent registry lifecycle hardening", () => {
     expect(persist).toHaveBeenCalled();
   });
 
-  it("keeps timeout completion terminal when a late success arrives", async () => {
+  it("keeps published explicit timeout completion terminal when a late success arrives", async () => {
     const persist = vi.fn();
     const runSubagentAnnounceFlow = vi.fn(async () => true);
     const entry = createRunEntry({
       startedAt: 2_000,
+      runTimeoutSeconds: 2,
       expectsCompletionMessage: true,
     });
     const controller = createLifecycleController({ entry, persist, runSubagentAnnounceFlow });
@@ -775,10 +776,51 @@ describe("subagent registry lifecycle hardening", () => {
     expect(entry.outcome).toEqual({
       status: "timeout",
       startedAt: 2_000,
-      endedAt: 4_250,
-      elapsedMs: 2_250,
+      endedAt: 4_000,
+      elapsedMs: 2_000,
     });
-    expect(entry.endedAt).toBe(4_250);
+    expect(entry.endedAt).toBe(4_000);
+    expect(runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps published explicit timeout terminal when no authoritative timeout metadata exists", async () => {
+    const persist = vi.fn();
+    const runSubagentAnnounceFlow = vi.fn(async () => true);
+    const entry = createRunEntry({
+      startedAt: 2_000,
+      runTimeoutSeconds: 2,
+      expectsCompletionMessage: true,
+    });
+    const getAuthoritativeLifecycleTimeout = vi.fn(() => undefined);
+    const controller = createLifecycleController({
+      entry,
+      persist,
+      runSubagentAnnounceFlow,
+      getAuthoritativeLifecycleTimeout,
+    });
+
+    await controller.completeSubagentRun({
+      runId: entry.runId,
+      endedAt: 4_250,
+      outcome: { status: "timeout" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+      triggerCleanup: true,
+    });
+    await controller.completeSubagentRun({
+      runId: entry.runId,
+      endedAt: 8_000,
+      outcome: { status: "ok" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+      triggerCleanup: true,
+    });
+
+    expect(entry.outcome).toEqual({
+      status: "timeout",
+      startedAt: 2_000,
+      endedAt: 4_000,
+      elapsedMs: 2_000,
+    });
+    expect(entry.endedAt).toBe(4_000);
     expect(runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 
