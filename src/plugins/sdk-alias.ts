@@ -42,11 +42,7 @@ function sanitizeJitiCachePathSegment(value: string): string {
 
 function resolveJitiFsCacheTmpDir(): string {
   let tmpDir = os.tmpdir();
-  if (
-    process.env.TMPDIR &&
-    tmpDir === process.cwd() &&
-    !process.env.JITI_RESPECT_TMPDIR_ENV
-  ) {
+  if (process.env.TMPDIR && tmpDir === process.cwd() && !process.env.JITI_RESPECT_TMPDIR_ENV) {
     const originalTmpDir = process.env.TMPDIR;
     delete process.env.TMPDIR;
     try {
@@ -934,6 +930,87 @@ export function resolvePluginSdkScopedAliasMap(
   return aliasMap;
 }
 
+type WorkspacePackageAliasEntry = {
+  specifier: string;
+  sourcePath: string;
+  distPath: string;
+};
+
+const WORKSPACE_PACKAGE_ALIAS_ENTRIES: readonly WorkspacePackageAliasEntry[] = [
+  {
+    specifier: "@openclaw/gateway-protocol/client-info",
+    sourcePath: "packages/gateway-protocol/src/client-info.ts",
+    distPath: "packages/gateway-protocol/dist/client-info.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-protocol/connect-error-details",
+    sourcePath: "packages/gateway-protocol/src/connect-error-details.ts",
+    distPath: "packages/gateway-protocol/dist/connect-error-details.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-protocol/schema",
+    sourcePath: "packages/gateway-protocol/src/schema.ts",
+    distPath: "packages/gateway-protocol/dist/schema.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-protocol/startup-unavailable",
+    sourcePath: "packages/gateway-protocol/src/startup-unavailable.ts",
+    distPath: "packages/gateway-protocol/dist/startup-unavailable.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-protocol/version",
+    sourcePath: "packages/gateway-protocol/src/version.ts",
+    distPath: "packages/gateway-protocol/dist/version.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-protocol",
+    sourcePath: "packages/gateway-protocol/src/index.ts",
+    distPath: "packages/gateway-protocol/dist/index.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-client/readiness",
+    sourcePath: "packages/gateway-client/src/readiness.ts",
+    distPath: "packages/gateway-client/dist/readiness.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-client/timeouts",
+    sourcePath: "packages/gateway-client/src/timeouts.ts",
+    distPath: "packages/gateway-client/dist/timeouts.mjs",
+  },
+  {
+    specifier: "@openclaw/gateway-client",
+    sourcePath: "packages/gateway-client/src/index.ts",
+    distPath: "packages/gateway-client/dist/index.mjs",
+  },
+] as const;
+
+function resolveWorkspacePackageAliasMap(
+  params: LoaderModuleResolveParams & { pluginSdkResolution?: PluginSdkResolutionPreference } = {},
+): Record<string, string> {
+  const modulePath = resolveLoaderModulePath(params);
+  const packageRoot = resolveLoaderPackageRoot({ ...params, modulePath });
+  if (!packageRoot) {
+    return {};
+  }
+  const orderedKinds = resolvePluginSdkAliasCandidateOrder({
+    modulePath,
+    isProduction: process.env.NODE_ENV === "production",
+    pluginSdkResolution: params.pluginSdkResolution,
+  });
+  const aliasMap: Record<string, string> = {};
+  for (const entry of WORKSPACE_PACKAGE_ALIAS_ENTRIES) {
+    for (const kind of orderedKinds) {
+      const candidate = path.join(packageRoot, kind === "dist" ? entry.distPath : entry.sourcePath);
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+      aliasMap[entry.specifier] = candidate;
+      break;
+    }
+  }
+  return aliasMap;
+}
+
 export function resolveExtensionApiAlias(params: LoaderModuleResolveParams = {}): string | null {
   try {
     const modulePath = resolveLoaderModulePath(params);
@@ -1173,6 +1250,11 @@ export function buildPluginLoaderAliasMap(
     ...Object.fromEntries(
       Object.entries(
         resolvePluginSdkScopedAliasMap({ modulePath, argv1, moduleUrl, pluginSdkResolution }),
+      ).map(([key, value]) => [key, normalizeJitiAliasTargetPath(value)]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(
+        resolveWorkspacePackageAliasMap({ modulePath, argv1, moduleUrl, pluginSdkResolution }),
       ).map(([key, value]) => [key, normalizeJitiAliasTargetPath(value)]),
     ),
   };
