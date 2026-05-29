@@ -90,12 +90,39 @@ vi.mock("./subagent-registry-helpers.js", () => ({
   ANNOUNCE_COMPLETION_HARD_EXPIRY_MS: 30 * 60_000,
   ANNOUNCE_EXPIRY_MS: 5 * 60_000,
   MAX_ANNOUNCE_RETRY_COUNT: 3,
+  MAX_SUBAGENT_RUN_TIMEOUT_MS: 2_147_000_000 - 15_000,
   MIN_ANNOUNCE_RETRY_DELAY_MS: 1_000,
+  SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS: 15_000,
   capFrozenResultText: (text: string) => text.trim(),
   logAnnounceGiveUp: helperMocks.logAnnounceGiveUp,
   persistSubagentSessionTiming: helperMocks.persistSubagentSessionTiming,
   resolveAnnounceRetryDelayMs: (retryCount: number) =>
     Math.min(1_000 * 2 ** Math.max(0, retryCount - 1), 8_000),
+  resolveSubagentRunTimeoutAt: (
+    entry: { runTimeoutSeconds?: number; startedAt?: number; createdAt?: number },
+    observedStartedAt?: number,
+  ) => {
+    const runTimeoutSeconds = entry.runTimeoutSeconds;
+    if (
+      typeof runTimeoutSeconds !== "number" ||
+      !Number.isFinite(runTimeoutSeconds) ||
+      runTimeoutSeconds <= 0
+    ) {
+      return undefined;
+    }
+    const startedAt =
+      typeof observedStartedAt === "number" && Number.isFinite(observedStartedAt)
+        ? observedStartedAt
+        : (entry.startedAt ?? entry.createdAt);
+    if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) {
+      return undefined;
+    }
+    const durationMs = Math.min(
+      Math.max(1, Math.floor(runTimeoutSeconds * 1000)),
+      2_147_000_000 - 15_000,
+    );
+    return Math.floor(startedAt) + durationMs;
+  },
   safeRemoveAttachmentsDir: helperMocks.safeRemoveAttachmentsDir,
 }));
 

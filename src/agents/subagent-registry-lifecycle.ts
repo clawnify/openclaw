@@ -51,6 +51,7 @@ import {
   MIN_ANNOUNCE_RETRY_DELAY_MS,
   persistSubagentSessionTiming,
   resolveAnnounceRetryDelayMs,
+  resolveSubagentRunTimeoutAt,
   safeRemoveAttachmentsDir,
 } from "./subagent-registry-helpers.js";
 import type { PendingFinalDeliveryPayload, SubagentRunRecord } from "./subagent-registry.types.js";
@@ -76,27 +77,6 @@ async function loadCleanupBrowserSessionsForLifecycleEnd(): Promise<
   return (await browserCleanupLoader.load()).cleanupBrowserSessionsForLifecycleEnd;
 }
 
-function resolveSubagentRunDeadlineMs(
-  entry: SubagentRunRecord,
-  observedStartedAt?: number,
-): number | undefined {
-  const timeoutSeconds = entry.runTimeoutSeconds;
-  if (
-    typeof timeoutSeconds !== "number" ||
-    !Number.isFinite(timeoutSeconds) ||
-    timeoutSeconds <= 0
-  ) {
-    return undefined;
-  }
-  const startedAt =
-    typeof observedStartedAt === "number" && Number.isFinite(observedStartedAt)
-      ? observedStartedAt
-      : typeof entry.startedAt === "number" && Number.isFinite(entry.startedAt)
-        ? entry.startedAt
-        : entry.createdAt;
-  return Number.isFinite(startedAt) ? startedAt + Math.floor(timeoutSeconds * 1000) : undefined;
-}
-
 function shouldPreservePublishedExplicitRunTimeout(params: { entry: SubagentRunRecord }): boolean {
   if (
     typeof params.entry.runTimeoutSeconds !== "number" ||
@@ -107,7 +87,7 @@ function shouldPreservePublishedExplicitRunTimeout(params: { entry: SubagentRunR
   ) {
     return false;
   }
-  const deadlineMs = resolveSubagentRunDeadlineMs(params.entry);
+  const deadlineMs = resolveSubagentRunTimeoutAt(params.entry);
   if (deadlineMs === undefined || params.entry.endedAt < deadlineMs) {
     return false;
   }
@@ -129,7 +109,7 @@ function resolveExpiredExplicitRunDeadlineMs(params: {
   nextEndedAt: number;
   observedStartedAt?: number;
 }): number | undefined {
-  const deadlineMs = resolveSubagentRunDeadlineMs(params.entry, params.observedStartedAt);
+  const deadlineMs = resolveSubagentRunTimeoutAt(params.entry, params.observedStartedAt);
   return deadlineMs !== undefined && params.nextEndedAt > deadlineMs ? deadlineMs : undefined;
 }
 
@@ -1131,7 +1111,7 @@ export function createSubagentRegistryLifecycleController(params: {
       (typeof completeParams.endedAt !== "number" ||
         completeParams.endedAt > pendingTimeout.endedAt)
     ) {
-      const observedDeadline = resolveSubagentRunDeadlineMs(entry, completeParams.startedAt);
+      const observedDeadline = resolveSubagentRunTimeoutAt(entry, completeParams.startedAt);
       if (
         typeof observedDeadline === "number" &&
         (typeof completeParams.startedAt !== "number" ||

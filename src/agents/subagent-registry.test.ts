@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { listTaskRecords, resetTaskRegistryForTests } from "../tasks/task-registry.js";
+import {
+  MAX_SUBAGENT_RUN_TIMEOUT_MS,
+  SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS,
+} from "./subagent-registry-helpers.js";
 
 const noop = () => {};
 const waitForFast = <T>(callback: () => T | Promise<T>) =>
@@ -622,7 +626,6 @@ describe("subagent registry seam flow", () => {
       }
       return {};
     });
-
     mod.registerSubagentRun({
       runId: "run-lifecycle-success-after-deadline",
       childSessionKey: "agent:main:subagent:child",
@@ -2599,6 +2602,81 @@ describe("subagent registry seam flow", () => {
     expect(run?.endedAt).toBeUndefined();
     expect(run?.outcome).toBeUndefined();
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
+  });
+
+  it("keeps clamped explicit timeout fallback authoritative over later lifecycle success", async () => {
+    const startedAt = Date.parse("2026-03-24T12:00:00Z");
+    mocks.callGateway.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "agent.wait") {
+        return { status: "pending" };
+      }
+      return {};
+    });
+    mocks.loadSessionStore.mockReturnValue({
+      "agent:main:subagent:child": {
+        sessionId: "sess-child",
+        status: "running",
+        startedAt,
+        updatedAt: startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS,
+      },
+    });
+    mocks.getAgentRunContext.mockReturnValue({ runId: "run-large-timeout-fallback-late-success" });
+
+    mod.registerSubagentRun({
+      runId: "run-large-timeout-fallback-late-success",
+      childSessionKey: "agent:main:subagent:child",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "large timeout fallback should use clamped deadline",
+      cleanup: "keep",
+      runTimeoutSeconds: 60 * 60 * 24 * 30,
+    });
+
+    await vi.advanceTimersByTimeAsync(
+      MAX_SUBAGENT_RUN_TIMEOUT_MS + SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS,
+    );
+    await waitForFast(() => {
+      const run = mod
+        .listSubagentRunsForRequester("agent:main:main")
+        .find((entry) => entry.runId === "run-large-timeout-fallback-late-success");
+      expect(run?.endedAt).toBe(startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS);
+      expectRecordFields(
+        run?.outcome,
+        {
+          status: "timeout",
+          startedAt,
+          endedAt: startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS,
+          elapsedMs: MAX_SUBAGENT_RUN_TIMEOUT_MS,
+        },
+        "clamped timeout fallback outcome",
+      );
+    });
+
+    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
+      mocks.onAgentEvent.mock.calls.length - 1
+    ] as unknown as
+      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
+      | undefined;
+    const lifecycleHandler = lastOnAgentEventCall?.[0];
+    expect(lifecycleHandler).toBeTypeOf("function");
+
+    lifecycleHandler?.({
+      runId: "run-large-timeout-fallback-late-success",
+      stream: "lifecycle",
+      data: {
+        phase: "end",
+        startedAt,
+        endedAt: startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS + 1_000,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-large-timeout-fallback-late-success");
+    expect(run?.endedAt).toBe(startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS);
+    expect(run?.outcome?.status).toBe("timeout");
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 
   it("keeps hard agent.wait timeouts authoritative over reconstructed session failures", async () => {

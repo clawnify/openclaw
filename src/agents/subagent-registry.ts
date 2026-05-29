@@ -44,8 +44,11 @@ import {
   reconcileOrphanedRestoredRuns,
   reconcileOrphanedRun,
   resolveAnnounceRetryDelayMs,
+  resolveSubagentRunTimeoutAt,
+  resolveSubagentRunTimeoutDurationMs,
   resolveSubagentRunOrphanReason,
   safeRemoveAttachmentsDir,
+  SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS,
 } from "./subagent-registry-helpers.js";
 import { createSubagentRegistryLifecycleController } from "./subagent-registry-lifecycle.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -89,6 +92,7 @@ export {
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
   resolveSubagentSessionStatus,
+  SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS,
 } from "./subagent-registry-helpers.js";
 const log = createSubsystemLogger("agents/subagent-registry");
 
@@ -206,17 +210,6 @@ const SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000;
  * subsequent lifecycle `start` / `end` can cancel premature failure announces.
  */
 const LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000;
-/**
- * Embedded runs can also surface an intermediate lifecycle `end` with
- * `aborted=true` just before the runtime automatically retries the same run.
- * Give that timeout a short grace window so the parent does not get a stale
- * `timed out` completion right before the eventual success.
- */
-export const SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS = 15_000;
-// Subagent waits observe the explicit deadline plus lifecycle reconciliation
-// grace, so the run deadline itself must leave room under the agent timeout cap.
-const MAX_SUBAGENT_RUN_TIMEOUT_MS =
-  MAX_AGENT_TIMEOUT_MS - SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS;
 /** Absolute TTL for session-mode runs after cleanup completes (no archiveAtMs). */
 const SESSION_RUN_TTL_MS = 5 * 60_000; // 5 minutes
 /** Absolute TTL for orphaned pendingLifecycleError / pendingLifecycleTimeout entries. */
@@ -609,18 +602,10 @@ function schedulePendingLifecycleTimeout(params: {
 }
 
 function scheduleRunTimeoutFallback(entry: SubagentRunRecord, startedAt: number) {
-  const runTimeoutSeconds = entry.runTimeoutSeconds;
-  if (
-    typeof runTimeoutSeconds !== "number" ||
-    !Number.isFinite(runTimeoutSeconds) ||
-    runTimeoutSeconds <= 0
-  ) {
+  const runTimeoutMs = resolveSubagentRunTimeoutDurationMs(entry.runTimeoutSeconds);
+  if (runTimeoutMs === undefined) {
     return;
   }
-  const runTimeoutMs = Math.min(
-    Math.max(1, Math.floor(runTimeoutSeconds * 1000)),
-    MAX_SUBAGENT_RUN_TIMEOUT_MS,
-  );
   const endedAt = startedAt + runTimeoutMs;
   schedulePendingLifecycleTimeout({
     runId: entry.runId,
@@ -630,27 +615,6 @@ function scheduleRunTimeoutFallback(entry: SubagentRunRecord, startedAt: number)
     authoritative: true,
     startedAt,
   });
-}
-
-function resolveSubagentRunTimeoutAtWithObservedStart(
-  entry: SubagentRunRecord,
-  observedStartedAt?: number,
-) {
-  const runTimeoutSeconds = entry.runTimeoutSeconds;
-  if (
-    typeof runTimeoutSeconds !== "number" ||
-    !Number.isFinite(runTimeoutSeconds) ||
-    runTimeoutSeconds <= 0
-  ) {
-    return undefined;
-  }
-  const startedAt =
-    typeof observedStartedAt === "number" && Number.isFinite(observedStartedAt)
-      ? observedStartedAt
-      : (entry.startedAt ?? entry.createdAt);
-  return Number.isFinite(startedAt)
-    ? Math.floor(startedAt) + Math.floor(runTimeoutSeconds * 1000)
-    : undefined;
 }
 
 async function notifyContextEngineSubagentEnded(params: {
@@ -1275,7 +1239,7 @@ function ensureListener() {
         (evt.data?.aborted === true && /\btimed?\s*out\b|timeout/i.test(error ?? "")
           ? "provider"
           : undefined);
-      const explicitRunTimeoutAt = resolveSubagentRunTimeoutAtWithObservedStart(entry, startedAt);
+      const explicitRunTimeoutAt = resolveSubagentRunTimeoutAt(entry, startedAt);
       const explicitRunTimeoutElapsed =
         typeof explicitRunTimeoutAt === "number" && endedAt >= explicitRunTimeoutAt;
       if (isHardAgentRunTimeoutPhase(timeoutPhase)) {

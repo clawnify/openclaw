@@ -23,6 +23,7 @@ import {
   getSubagentSessionStartedAt,
   resolveSubagentSessionStatus,
 } from "./subagent-session-metrics.js";
+import { MAX_AGENT_TIMEOUT_MS } from "./timeout.js";
 
 export {
   getSubagentSessionRuntimeMs,
@@ -35,6 +36,17 @@ const MAX_ANNOUNCE_RETRY_DELAY_MS = 8_000;
 export const MAX_ANNOUNCE_RETRY_COUNT = 3;
 export const ANNOUNCE_EXPIRY_MS = 5 * 60_000;
 export const ANNOUNCE_COMPLETION_HARD_EXPIRY_MS = 30 * 60_000;
+/**
+ * Embedded runs can also surface an intermediate lifecycle `end` with
+ * `aborted=true` just before the runtime automatically retries the same run.
+ * Give that timeout a short grace window so the parent does not get a stale
+ * `timed out` completion right before the eventual success.
+ */
+export const SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS = 15_000;
+// Subagent waits observe the explicit deadline plus lifecycle reconciliation
+// grace, so every deadline calculation uses the same timer-safe cap.
+export const MAX_SUBAGENT_RUN_TIMEOUT_MS =
+  MAX_AGENT_TIMEOUT_MS - SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS;
 
 const FROZEN_RESULT_TEXT_MAX_BYTES = 100 * 1024;
 
@@ -66,8 +78,7 @@ export function resolveAnnounceRetryDelayMs(retryCount: number) {
   return Math.min(baseDelay, MAX_ANNOUNCE_RETRY_DELAY_MS);
 }
 
-export function resolveSubagentRunTimeoutAt(entry: SubagentRunRecord): number | undefined {
-  const runTimeoutSeconds = entry.runTimeoutSeconds;
+export function resolveSubagentRunTimeoutDurationMs(runTimeoutSeconds: number | undefined) {
   if (
     typeof runTimeoutSeconds !== "number" ||
     !Number.isFinite(runTimeoutSeconds) ||
@@ -75,11 +86,25 @@ export function resolveSubagentRunTimeoutAt(entry: SubagentRunRecord): number | 
   ) {
     return undefined;
   }
-  const startedAt = entry.startedAt ?? entry.createdAt;
+  return Math.min(Math.max(1, Math.floor(runTimeoutSeconds * 1000)), MAX_SUBAGENT_RUN_TIMEOUT_MS);
+}
+
+export function resolveSubagentRunTimeoutAt(
+  entry: SubagentRunRecord,
+  observedStartedAt?: number,
+): number | undefined {
+  const runTimeoutMs = resolveSubagentRunTimeoutDurationMs(entry.runTimeoutSeconds);
+  if (runTimeoutMs === undefined) {
+    return undefined;
+  }
+  const startedAt =
+    typeof observedStartedAt === "number" && Number.isFinite(observedStartedAt)
+      ? observedStartedAt
+      : (entry.startedAt ?? entry.createdAt);
   if (!Number.isFinite(startedAt)) {
     return undefined;
   }
-  return Math.floor(startedAt) + Math.floor(runTimeoutSeconds * 1000);
+  return Math.floor(startedAt) + runTimeoutMs;
 }
 
 export function isAtOrAfterSubagentRunTimeout(

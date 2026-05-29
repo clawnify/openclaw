@@ -49,36 +49,12 @@ function shouldDeleteAttachments(entry: SubagentRunRecord) {
   return entry.cleanup === "delete" || !entry.retainAttachmentsOnKeep;
 }
 
-function resolveSubagentRunDeadlineMs(
-  entry: SubagentRunRecord,
-  observedStartedAt?: number,
-): number | undefined {
-  const timeoutSeconds = entry.runTimeoutSeconds;
-  if (
-    typeof timeoutSeconds !== "number" ||
-    !Number.isFinite(timeoutSeconds) ||
-    timeoutSeconds <= 0
-  ) {
-    return undefined;
-  }
-  const startedAt =
-    typeof observedStartedAt === "number" && Number.isFinite(observedStartedAt)
-      ? observedStartedAt
-      : typeof entry.startedAt === "number" && Number.isFinite(entry.startedAt)
-        ? entry.startedAt
-        : entry.createdAt;
-  if (!Number.isFinite(startedAt)) {
-    return undefined;
-  }
-  return startedAt + Math.floor(timeoutSeconds * 1000);
-}
-
 function resolveHardRunTimeoutEndedAt(
   entry: SubagentRunRecord,
   now: number,
   observedStartedAt?: number,
 ): number | undefined {
-  const deadlineMs = resolveSubagentRunDeadlineMs(entry, observedStartedAt);
+  const deadlineMs = resolveSubagentRunTimeoutAt(entry, observedStartedAt);
   if (deadlineMs === undefined) {
     return undefined;
   }
@@ -91,7 +67,7 @@ function resolveCompletionAfterHardRunDeadline(params: {
   observedEndedAt?: number;
   now: number;
 }): number | undefined {
-  const deadlineMs = resolveSubagentRunDeadlineMs(params.entry, params.observedStartedAt);
+  const deadlineMs = resolveSubagentRunTimeoutAt(params.entry, params.observedStartedAt);
   if (deadlineMs === undefined) {
     return undefined;
   }
@@ -108,7 +84,7 @@ function resolveWaitTimeoutMsForRun(
   now: number,
 ): number {
   const normalizedWaitTimeoutMs = Math.max(1, Math.floor(waitTimeoutMs));
-  const deadlineMs = resolveSubagentRunDeadlineMs(entry);
+  const deadlineMs = resolveSubagentRunTimeoutAt(entry);
   if (deadlineMs === undefined) {
     return normalizedWaitTimeoutMs;
   }
@@ -415,7 +391,7 @@ export function createSubagentRunManager(params: {
         // A plain agent.wait timeout has no terminal snapshot. For explicit
         // subagent run timeouts, the stored run deadline is the completion
         // contract so parent sessions are woken instead of retrying forever.
-        const explicitRunTimeoutAt = resolveSubagentRunDeadlineMs(entry, observedStartedAt);
+        const explicitRunTimeoutAt = resolveSubagentRunTimeoutAt(entry, observedStartedAt);
         const explicitRunTimeoutElapsed =
           typeof explicitRunTimeoutAt === "number" &&
           (hardTimeoutObservedAt ?? now) + WAIT_TIMEOUT_DEADLINE_SKEW_MS >= explicitRunTimeoutAt;
@@ -524,7 +500,7 @@ export function createSubagentRunManager(params: {
         if (typeof wait.endedAt !== "number" && typeof entry.endedAt !== "number") {
           return;
         }
-        const observedDeadline = resolveSubagentRunDeadlineMs(entry, observedStartedAt);
+        const observedDeadline = resolveSubagentRunTimeoutAt(entry, observedStartedAt);
         if (
           typeof observedDeadline === "number" &&
           (typeof observedStartedAt !== "number" || observedStartedAt < pendingTimeout.endedAt) &&
