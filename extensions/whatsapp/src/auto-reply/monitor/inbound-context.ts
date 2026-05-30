@@ -6,8 +6,8 @@ import {
   type WhatsAppIdentity,
   type WhatsAppReplyContext,
 } from "../../identity.js";
+import type { WebInboundMessage } from "../../inbound/types.js";
 import { normalizeE164 } from "../../text-runtime.js";
-import type { WebInboundMsg } from "../types.js";
 
 export type GroupHistoryEntry = {
   sender: string;
@@ -65,7 +65,7 @@ export function resolveVisibleWhatsAppGroupHistory(params: {
 }
 
 export function resolveVisibleWhatsAppReplyContext(params: {
-  msg: WebInboundMsg;
+  msg: WebInboundMessage;
   authDir?: string;
   mode: ContextVisibilityMode;
   groupPolicy: "open" | "allowlist" | "disabled";
