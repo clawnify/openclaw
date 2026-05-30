@@ -4,28 +4,20 @@ vi.mock("./group-activation.js", () => ({
   resolveGroupActivationFor: vi.fn(async () => "mention"),
 }));
 
+import { createTestWebGroupAudioInboundMessage } from "../../inbound/test-message.test-helper.js";
+import type { WebInboundMessage } from "../../inbound/types.js";
 import type { MentionConfig } from "../mentions.js";
-import type { WebInboundMsg } from "../types.js";
 import { applyGroupGating, type GroupHistoryEntry } from "./group-gating.js";
 
-function makeGroupAudioMsg(): WebInboundMsg {
-  return {
-    id: "msg-1",
-    from: "1203630@g.us",
-    to: "+15550000001",
-    body: "<media:audio>",
-    chatId: "1203630@g.us",
-    chatType: "group",
-    conversationId: "1203630@g.us",
-    mediaType: "audio/ogg; codecs=opus",
-    mediaPath: "/tmp/voice.ogg",
-    timestamp: 1700000000,
-    accountId: "default",
-    sender: { e164: "+15550000002", name: "Alice" },
-  } as WebInboundMsg;
+function makeGroupAudioMsg(): WebInboundMessage {
+  return createTestWebGroupAudioInboundMessage({
+    platform: {
+      sender: { e164: "+15550000002", name: "Alice" },
+    },
+  });
 }
 
-function makeParams(msg: WebInboundMsg, groupHistories: Map<string, GroupHistoryEntry[]>) {
+function makeParams(msg: WebInboundMessage, groupHistories: Map<string, GroupHistoryEntry[]>) {
   return {
     cfg: {
       channels: {
