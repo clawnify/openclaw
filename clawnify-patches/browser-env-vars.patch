@@ -1,0 +1,305 @@
+diff --git a/extensions/browser/skills/browser-automation/SKILL.md b/extensions/browser/skills/browser-automation/SKILL.md
+index b0516b4e33..81c885c3ef 100644
+--- a/extensions/browser/skills/browser-automation/SKILL.md
++++ b/extensions/browser/skills/browser-automation/SKILL.md
+@@ -34,6 +34,24 @@ Use this skill when you need the `browser` tool for anything beyond a single pag
+    - If the page needs login, permission, captcha, 2FA, camera/microphone approval, or another manual step, stop and tell the user exactly what is needed.
+    - Do not claim the browser is not logged in just because the current page shows a permission or onboarding dialog. Inspect the visible UI first.
+ 
++## Secrets From Environment Variables
++
++When you must type a credential (password, API key, account login) into a page,
++do not write the secret literally. Instead reference an environment variable
++with the `{{env:KEY}}` placeholder anywhere you supply a value — the `type`
++text, a `fill` field value, or a `select` value. The browser substitutes the
++real value of `KEY` just before typing, so the secret never appears in your
++context or the transcript; you only ever see `{{env:KEY}}`.
++
++```json
++{ "action": "type", "ref": "e7", "text": "{{env:INVITATIONS_ADMIN_PASSWORD}}" }
++```
++
++Only variables on the SecretRef env allowlist
++(`secrets.providers.<env>.allowlist`) can be referenced; an unknown or unset
++variable fails the action rather than typing the literal placeholder. Values
++typed this way are also scrubbed from later page snapshots.
++
+ ## Tab Hygiene
+ 
+ Before creating a tab for a named task, list tabs and reuse an existing matching label or URL when it is still usable.
+diff --git a/extensions/browser/src/browser-tool.actions.ts b/extensions/browser/src/browser-tool.actions.ts
+index e85e397444..34b9ea2968 100644
+--- a/extensions/browser/src/browser-tool.actions.ts
++++ b/extensions/browser/src/browser-tool.actions.ts
+@@ -24,6 +24,7 @@ import {
+   DEFAULT_BROWSER_ACTION_TIMEOUT_MS,
+   DEFAULT_BROWSER_SNAPSHOT_TIMEOUT_MS,
+ } from "./browser/constants.js";
++import { redactKnownSecrets, resolveEnvInActRequest } from "./browser/env-secrets.js";
+ 
+ const browserToolActionDeps = {
+   browserAct,
+@@ -451,7 +452,9 @@ export async function executeSnapshotAction(params: {
+         },
+       };
+     }
+-    const extractedText = snapshot.snapshot ?? "";
++    // Scrub any env secret value that was typed via {{env:KEY}} so a page
++    // snapshot can't echo it back into the model context.
++    const extractedText = redactKnownSecrets(snapshot.snapshot ?? "");
+     const wrappedSnapshot = wrapExternalContent(extractedText, {
+       source: "browser",
+       includeWarning: true,
+@@ -557,7 +560,15 @@ export async function executeActAction(params: {
+   onTabActivity?: (targetId: string | undefined) => void;
+ }): Promise<AgentToolResult<unknown>> {
+   const { request, baseUrl, profile, proxyRequest } = params;
+-  const effectiveRequest = withConfiguredActTimeout(request, profile);
++  // Resolve any {{env:KEY}} placeholders before dispatch. This runs after the
++  // agent's tool call has already been recorded, so the transcript keeps the
++  // placeholder while only the browser receives the real value. Fails closed:
++  // an unresolved or unallowlisted variable throws before anything is typed.
++  const resolvedRequest = await resolveEnvInActRequest(
++    request,
++    browserToolActionDeps.getRuntimeConfig(),
++  );
++  const effectiveRequest = withConfiguredActTimeout(resolvedRequest, profile);
+   try {
+     const result = proxyRequest
+       ? await proxyRequest({
+diff --git a/extensions/browser/src/browser/env-secrets.test.ts b/extensions/browser/src/browser/env-secrets.test.ts
+new file mode 100644
+index 0000000000..3011f8ac6b
+--- /dev/null
++++ b/extensions/browser/src/browser/env-secrets.test.ts
+@@ -0,0 +1,83 @@
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-auth";
++import type { BrowserActRequest } from "./client-actions.types.js";
++import { redactKnownSecrets, resolveEnvInActRequest } from "./env-secrets.js";
++
++// Uses the default env provider alias ("default") with an explicit allowlist.
++function configWithAllowlist(allowlist: string[]): OpenClawConfig {
++  return {
++    secrets: { providers: { default: { source: "env", allowlist } } },
++  } as unknown as OpenClawConfig;
++}
++
++describe("resolveEnvInActRequest", () => {
++  beforeEach(() => {
++    process.env.TEST_ENV_USER = "alice";
++    process.env.TEST_ENV_PW = "s3cret-value";
++  });
++  afterEach(() => {
++    delete process.env.TEST_ENV_USER;
++    delete process.env.TEST_ENV_PW;
++  });
++
++  it("substitutes {{env:KEY}} in type text", async () => {
++    const out = await resolveEnvInActRequest(
++      { kind: "type", text: "{{env:TEST_ENV_USER}}" } as BrowserActRequest,
++      configWithAllowlist(["TEST_ENV_USER"]),
++    );
++    expect(out).toMatchObject({ kind: "type", text: "alice" });
++  });
++
++  it("substitutes inside fill field values and select values", async () => {
++    const filled = await resolveEnvInActRequest(
++      {
++        kind: "fill",
++        fields: [{ ref: "e1", type: "text", value: "user={{env:TEST_ENV_USER}}" }],
++      } as BrowserActRequest,
++      configWithAllowlist(["TEST_ENV_USER"]),
++    );
++    expect((filled as { fields: { value: string }[] }).fields[0].value).toBe("user=alice");
++
++    const selected = await resolveEnvInActRequest(
++      { kind: "select", values: ["{{env:TEST_ENV_USER}}"] } as BrowserActRequest,
++      configWithAllowlist(["TEST_ENV_USER"]),
++    );
++    expect((selected as { values: string[] }).values[0]).toBe("alice");
++  });
++
++  it("recurses into batch actions", async () => {
++    const out = await resolveEnvInActRequest(
++      {
++        kind: "batch",
++        actions: [{ kind: "type", text: "{{env:TEST_ENV_PW}}" }],
++      } as BrowserActRequest,
++      configWithAllowlist(["TEST_ENV_PW"]),
++    );
++    expect((out as { actions: { text: string }[] }).actions[0].text).toBe("s3cret-value");
++  });
++
++  it("fails closed when the variable is not allowlisted", async () => {
++    await expect(
++      resolveEnvInActRequest(
++        { kind: "type", text: "{{env:TEST_ENV_PW}}" } as BrowserActRequest,
++        configWithAllowlist(["TEST_ENV_USER"]),
++      ),
++    ).rejects.toThrow(/allowlist/i);
++  });
++
++  it("returns the request untouched when there is no placeholder", async () => {
++    const req = { kind: "type", text: "literal text" } as BrowserActRequest;
++    const out = await resolveEnvInActRequest(req, configWithAllowlist([]));
++    expect(out).toBe(req);
++  });
++
++  it("redacts resolved secret values from later text (e.g. snapshots)", async () => {
++    await resolveEnvInActRequest(
++      { kind: "type", text: "{{env:TEST_ENV_PW}}" } as BrowserActRequest,
++      configWithAllowlist(["TEST_ENV_PW"]),
++    );
++    expect(redactKnownSecrets("the field shows s3cret-value now")).toBe(
++      "the field shows •••••• now",
++    );
++  });
++});
+diff --git a/extensions/browser/src/browser/env-secrets.ts b/extensions/browser/src/browser/env-secrets.ts
+new file mode 100644
+index 0000000000..cfd61f58c0
+--- /dev/null
++++ b/extensions/browser/src/browser/env-secrets.ts
+@@ -0,0 +1,141 @@
++// Environment-variable placeholders for browser actions.
++//
++// The agent may write `{{env:KEY}}` anywhere it would type a literal value
++// (the `type` text, a `fill` field value, a `select` value). Just before the
++// keystrokes are dispatched to the browser, the placeholder is replaced with
++// the value of the environment variable `KEY`. The substitution happens inside
++// the tool, after the agent's tool call has already been recorded — so the
++// model context and the transcript only ever contain `{{env:KEY}}`, never the
++// secret itself.
++//
++// Which env vars may be referenced is governed by the native SecretRef "env"
++// provider allowlist (`secrets.providers.<env>.allowlist`): resolution goes
++// through `resolveSecretRefValues`, which throws when `KEY` is not allowlisted
++// or is unset. We fail closed — an unresolved placeholder aborts the action
++// rather than typing the literal `{{env:KEY}}` text.
++
++import { resolveDefaultSecretProviderAlias } from "openclaw/plugin-sdk/provider-auth";
++import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-auth";
++import { resolveSecretRefValues } from "openclaw/plugin-sdk/runtime-secret-resolution";
++import type { BrowserActRequest } from "./client-actions.types.js";
++
++// KEY follows POSIX-ish env var naming; the allowlist does the real gating.
++const ENV_PLACEHOLDER = /\{\{\s*env:([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
++
++// Values resolved from {{env:KEY}} this process, so the browser tool can scrub
++// them from its own textual output (snapshots, action results) — a secret that
++// was typed into a visible field must not leak back to the model verbatim.
++const knownSecretValues = new Set<string>();
++
++/** Mask any previously-resolved env secret value found in `text`. */
++export function redactKnownSecrets(text: string): string {
++  if (!text || knownSecretValues.size === 0) return text;
++  let out = text;
++  for (const value of knownSecretValues) {
++    if (value) out = out.split(value).join("••••••");
++  }
++  return out;
++}
++
++function collectEnvKeys(value: string, out: Set<string>): void {
++  for (const match of value.matchAll(ENV_PLACEHOLDER)) out.add(match[1]);
++}
++
++function collectActRequestEnvKeys(request: BrowserActRequest, out: Set<string>): void {
++  switch (request.kind) {
++    case "type":
++      collectEnvKeys(request.text, out);
++      break;
++    case "fill":
++      for (const field of request.fields) {
++        if (typeof field.value === "string") collectEnvKeys(field.value, out);
++      }
++      break;
++    case "select":
++      for (const value of request.values) collectEnvKeys(value, out);
++      break;
++    case "batch":
++      for (const action of request.actions) collectActRequestEnvKeys(action, out);
++      break;
++    default:
++      break;
++  }
++}
++
++function substituteActRequest(
++  request: BrowserActRequest,
++  values: Map<string, string>,
++): BrowserActRequest {
++  const sub = (value: string): string =>
++    value.replace(ENV_PLACEHOLDER, (match, key: string) => values.get(key) ?? match);
++  switch (request.kind) {
++    case "type":
++      return { ...request, text: sub(request.text) };
++    case "fill":
++      return {
++        ...request,
++        fields: request.fields.map((field) =>
++          typeof field.value === "string" ? { ...field, value: sub(field.value) } : field,
++        ),
++      };
++    case "select":
++      return { ...request, values: request.values.map(sub) };
++    case "batch":
++      return {
++        ...request,
++        actions: request.actions.map((action) => substituteActRequest(action, values)),
++      };
++    default:
++      return request;
++  }
++}
++
++async function resolveEnvKeyValue(key: string, config: OpenClawConfig): Promise<string> {
++  const provider = resolveDefaultSecretProviderAlias({ secrets: config.secrets }, "env");
++  // resolveSecretRefValues enforces secrets.providers.<provider>.allowlist and
++  // throws if `key` is not allowlisted or resolves to no value.
++  const resolved = await resolveSecretRefValues([{ source: "env", provider, id: key }], {
++    config,
++  });
++  const value = [...resolved.values()][0];
++  if (typeof value !== "string" || value.length === 0) {
++    throw new Error(`environment variable "${key}" resolved to an empty or non-string value`);
++  }
++  return value;
++}
++
++/**
++ * Replace every `{{env:KEY}}` placeholder in a browser action request with the
++ * value of the referenced environment variable. Returns the original request
++ * unchanged when it contains no placeholders (no secret resolution attempted).
++ *
++ * Throws when a referenced variable is not allowlisted or is unset — callers
++ * must surface this as a tool error and must NOT dispatch the action.
++ */
++export async function resolveEnvInActRequest(
++  request: BrowserActRequest,
++  config: OpenClawConfig,
++): Promise<BrowserActRequest> {
++  const keys = new Set<string>();
++  collectActRequestEnvKeys(request, keys);
++  if (keys.size === 0) return request;
++
++  const values = new Map<string, string>();
++  for (const key of keys) {
++    let value: string;
++    try {
++      value = await resolveEnvKeyValue(key, config);
++    } catch (err) {
++      throw new Error(
++        `cannot type {{env:${key}}}: ${(err as Error).message}. Add "${key}" to ` +
++          `secrets.providers.<env>.allowlist and set it in the environment.`,
++        { cause: err },
++      );
++    }
++    values.set(key, value);
++    knownSecretValues.add(value);
++  }
++  return substituteActRequest(request, values);
++}
++
++export const __testing = { ENV_PLACEHOLDER, knownSecretValues };

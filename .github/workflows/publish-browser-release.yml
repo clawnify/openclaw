@@ -1,0 +1,106 @@
+name: Publish @openclaw/browser-plugin (Clawnify fork) release
+
+# Builds the Clawnify fork of @openclaw/browser-plugin for a SPECIFIC upstream
+# release and publishes the installable tarball as a GitHub Release asset.
+#
+# Our delta is kept as a version-independent patch
+# (clawnify-patches/browser-env-vars.patch): it adds {{env:KEY}} substitution
+# to the browser tool's type/fill/select actions, gated by the native
+# secrets.providers.<env>.allowlist. The same delta is proposed upstream
+# (openclaw/openclaw#89234).
+#
+# To produce a build compatible with openclaw runtime vX, push a tag
+# `browser-vX` (or dispatch with upstream_tag=vX): CI checks out upstream vX,
+# applies the patch, builds, and releases `browser-vX`. The fleet installs the
+# browser-v<runtime-version> matching its pinned openclaw runtime.
+#
+# Usually the patch applies cleanly; when upstream refactors the touched files
+# (browser-tool.actions.ts) the `git apply` step fails — resolve once, refresh
+# the patch, re-tag. Interim until openclaw/openclaw#89234 lands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream openclaw release tag to build against (e.g. v2026.5.20)"
+        required: true
+        default: "v2026.5.20"
+  push:
+    tags:
+      - "browser-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (for the patch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target upstream tag
+        id: target
+        run: |
+          if [ -n "${{ inputs.upstream_tag }}" ]; then
+            TAG="${{ inputs.upstream_tag }}"
+          else
+            # tag push: browser-v2026.5.20 -> v2026.5.20
+            TAG="${GITHUB_REF_NAME#browser-}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building against upstream openclaw $TAG"
+
+      - name: Stash our patch
+        run: |
+          mkdir -p /tmp/overlay
+          cp clawnify-patches/browser-env-vars.patch /tmp/overlay/
+
+      - name: Check out upstream release + apply our delta
+        run: |
+          git config user.email "ci@clawnify.com"
+          git config user.name "clawnify-ci"
+          git remote add upstream https://github.com/openclaw/openclaw.git
+          git fetch --no-tags --depth 1 upstream "refs/tags/${{ steps.target.outputs.tag }}:refs/tags/${{ steps.target.outputs.tag }}"
+          git checkout -f "${{ steps.target.outputs.tag }}"
+          git apply --3way --whitespace=nowarn /tmp/overlay/browser-env-vars.patch
+          echo "Applied Clawnify browser env-vars delta onto ${{ steps.target.outputs.tag }}"
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/lib/plugin-npm-runtime-build.mjs extensions/browser
+
+      - name: Pack installable tarball
+        id: pack
+        run: |
+          rm -f extensions/browser/*.tgz
+          node scripts/lib/plugin-npm-package-manifest.mjs --run extensions/browser -- npm pack --ignore-scripts
+          TARBALL=$(ls extensions/browser/*.tgz | head -1)
+          VERSION=$(node -e "console.log(require('./extensions/browser/package.json').version)")
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: browser-v${{ steps.pack.outputs.version }}
+          name: "@openclaw/browser-plugin ${{ steps.pack.outputs.version }} (Clawnify fork + env-var typing)"
+          body: |
+            Clawnify fork of `@openclaw/browser-plugin@${{ steps.pack.outputs.version }}` (built on upstream
+            `${{ steps.target.outputs.tag }}`) with `{{env:KEY}}` substitution in the browser tool's
+            type/fill/select actions, gated by the native `secrets.providers.<env>.allowlist`.
+
+            Install on a server running openclaw `${{ steps.pack.outputs.version }}`:
+            ```
+            openclaw plugins install <this-asset-url> --force --pin
+            ```
+            Interim until openclaw/openclaw#89234 lands.
+          files: ${{ steps.pack.outputs.tarball }}
+          fail_on_unmatched_files: true
