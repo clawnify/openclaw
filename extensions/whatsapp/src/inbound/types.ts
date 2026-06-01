@@ -41,6 +41,18 @@ export type ActiveWebListener = {
     participant?: string,
   ) => Promise<WhatsAppSendResult>;
   sendComposingTo: (to: string) => Promise<void>;
+  /** Create a new group with the given subject and participants (E.164 numbers or JIDs). */
+  createGroup: (
+    subject: string,
+    participants: string[],
+  ) => Promise<{ groupJid: string; subject: string }>;
+  /** Add participants (E.164 numbers or JIDs) to an existing group. */
+  addGroupParticipants: (
+    groupJid: string,
+    participants: string[],
+  ) => Promise<Array<{ jid: string | undefined; status: string }>>;
+  /** Resolve the invite code + link for a group the bot administers. */
+  getGroupInviteCode: (groupJid: string) => Promise<{ code: string; inviteLink: string }>;
   close?: () => Promise<void>;
 };
 
