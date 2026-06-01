@@ -252,6 +252,9 @@ export async function startOrResumeThread(params: {
   const dynamicToolsFingerprint = lifecycleTiming.measureSync("fingerprint_dynamic_tools", () =>
     fingerprintDynamicTools(params.dynamicTools),
   );
+  const dynamicToolsContainDeferred = params.dynamicTools.some(
+    (tool) => tool.deferLoading === true,
+  );
   const contextEngineBinding = lifecycleTiming.measureSync("context_engine_binding", () =>
     buildContextEngineBinding(params.params, params.contextEngineProjection),
   );
@@ -388,6 +391,23 @@ export async function startOrResumeThread(params: {
     binding = undefined;
   }
   if (binding?.threadId) {
+    if (
+      binding.dynamicToolsFingerprint &&
+      binding.dynamicToolsContainDeferred !== dynamicToolsContainDeferred &&
+      (binding.dynamicToolsContainDeferred !== undefined ||
+        (!dynamicToolsContainDeferred && params.dynamicTools.length > 0))
+    ) {
+      embeddedAgentLog.debug(
+        "codex app-server dynamic tool loading changed; starting a new thread",
+        {
+          threadId: binding.threadId,
+        },
+      );
+      await clearCodexAppServerBinding(params.params.sessionFile);
+      binding = undefined;
+    }
+  }
+  if (binding?.threadId) {
     // `/codex resume <thread>` writes a binding before the next turn can know
     // the dynamic tool catalog, so only invalidate fingerprints we actually have.
     if (
@@ -471,6 +491,7 @@ export async function startOrResumeThread(params: {
               model: params.params.modelId,
               modelProvider: response.modelProvider ?? fallbackModelProvider,
               dynamicToolsFingerprint,
+              dynamicToolsContainDeferred,
               userMcpServersFingerprint,
               mcpServersFingerprint: nextMcpServersFingerprint,
               nativeHookRelayGeneration:
@@ -515,6 +536,7 @@ export async function startOrResumeThread(params: {
           model: params.params.modelId,
           modelProvider: response.modelProvider ?? fallbackModelProvider,
           dynamicToolsFingerprint,
+          dynamicToolsContainDeferred,
           userMcpServersFingerprint,
           mcpServersFingerprint: nextMcpServersFingerprint,
           nativeHookRelayGeneration:
@@ -600,6 +622,7 @@ export async function startOrResumeThread(params: {
           model: response.model ?? params.params.modelId,
           modelProvider: response.modelProvider ?? modelProvider,
           dynamicToolsFingerprint,
+          dynamicToolsContainDeferred,
           userMcpServersFingerprint,
           mcpServersFingerprint: nextMcpServersFingerprint,
           nativeHookRelayGeneration: finalConfigPatch.nativeHookRelayGeneration,
@@ -645,6 +668,7 @@ export async function startOrResumeThread(params: {
     model: response.model ?? params.params.modelId,
     modelProvider: response.modelProvider ?? modelProvider,
     dynamicToolsFingerprint,
+    dynamicToolsContainDeferred,
     userMcpServersFingerprint,
     mcpServersFingerprint: nextMcpServersFingerprint,
     nativeHookRelayGeneration: finalConfigPatch.nativeHookRelayGeneration,
