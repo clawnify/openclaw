@@ -587,7 +587,32 @@ Behavior notes:
 - Action gates:
   - `channels.whatsapp.actions.reactions`
   - `channels.whatsapp.actions.polls`
+  - `channels.whatsapp.actions.groups`
 - Channel-initiated config writes are enabled by default (disable via `channels.whatsapp.configWrites=false`).
+
+### Group management tools
+
+When `channels.whatsapp.actions.groups` is `true` (default `false`), the agent gains three group tools, available only while WhatsApp is linked and the gateway listener is active:
+
+| Tool                              | Purpose                                                                                         |
+| --------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `whatsapp_group_create`           | Create a group with a subject and participants (E.164 numbers). Returns the new group JID.      |
+| `whatsapp_group_add_participants` | Add participants (E.164 numbers) to an existing group JID.                                      |
+| `whatsapp_group_invite_link`      | Resolve the invite code + `https://chat.whatsapp.com/...` link for a group the bot administers. |
+
+These actions can add arbitrary people to chats, so they are opt-in:
+
+```json5
+{
+  channels: {
+    whatsapp: {
+      actions: {
+        groups: true,
+      },
+    },
+  },
+}
+```
 
 ## Troubleshooting
 

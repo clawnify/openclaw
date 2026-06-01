@@ -31,6 +31,9 @@ type MockWebListener = {
   sendPoll: () => Promise<WhatsAppSendResult>;
   sendReaction: () => Promise<WhatsAppSendResult>;
   sendComposingTo: () => Promise<void>;
+  createGroup: () => Promise<{ groupJid: string; subject: string }>;
+  addGroupParticipants: () => Promise<Array<{ jid: string | undefined; status: string }>>;
+  getGroupInviteCode: () => Promise<{ code: string; inviteLink: string }>;
 };
 type UnknownMock = Mock<(...args: unknown[]) => unknown>;
 type AsyncUnknownMock = Mock<(...args: unknown[]) => Promise<unknown>>;
@@ -265,6 +268,12 @@ export function createMockWebListener(): MockWebListener {
     sendPoll: vi.fn(async () => createAcceptedWhatsAppSendResult("poll", "poll-1")),
     sendReaction: vi.fn(async () => createAcceptedWhatsAppSendResult("reaction", "reaction-1")),
     sendComposingTo: vi.fn(async () => undefined),
+    createGroup: vi.fn(async () => ({ groupJid: "120363000000000000@g.us", subject: "Group" })),
+    addGroupParticipants: vi.fn(async () => []),
+    getGroupInviteCode: vi.fn(async () => ({
+      code: "INVITE1234",
+      inviteLink: "https://chat.whatsapp.com/INVITE1234",
+    })),
   };
 }
 

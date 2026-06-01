@@ -41,6 +41,16 @@ export function createWebSendApi(params: {
       options?: MiscMessageGenerationOptions,
     ) => Promise<WAMessage | undefined>;
     sendPresenceUpdate: (presence: WAPresence, jid?: string) => Promise<unknown>;
+    groupCreate: (
+      subject: string,
+      participants: string[],
+    ) => Promise<{ id: string; subject?: string }>;
+    groupParticipantsUpdate: (
+      jid: string,
+      participants: string[],
+      action: "add",
+    ) => Promise<Array<{ status: string; jid: string | undefined }>>;
+    groupInviteCode: (jid: string) => Promise<string | undefined>;
   };
   defaultAccountId: string;
   resolveOutboundMentions?: (params: {
@@ -199,6 +209,31 @@ export function createWebSendApi(params: {
         return;
       }
       await params.sock.sendPresenceUpdate("composing", jid);
+    },
+    createGroup: async (
+      subject: string,
+      participants: string[],
+    ): Promise<{ groupJid: string; subject: string }> => {
+      const participantJids = participants.map((p) => toWhatsappJid(p));
+      const meta = await params.sock.groupCreate(subject, participantJids);
+      recordWhatsAppOutbound(params.defaultAccountId);
+      return { groupJid: meta.id, subject: meta.subject ?? subject };
+    },
+    addGroupParticipants: async (
+      groupJid: string,
+      participants: string[],
+    ): Promise<Array<{ jid: string | undefined; status: string }>> => {
+      const participantJids = participants.map((p) => toWhatsappJid(p));
+      const results = await params.sock.groupParticipantsUpdate(groupJid, participantJids, "add");
+      recordWhatsAppOutbound(params.defaultAccountId);
+      return results.map((r) => ({ jid: r.jid, status: r.status }));
+    },
+    getGroupInviteCode: async (groupJid: string): Promise<{ code: string; inviteLink: string }> => {
+      const code = await params.sock.groupInviteCode(groupJid);
+      if (!code) {
+        throw new Error(`No invite code returned for group ${groupJid}.`);
+      }
+      return { code, inviteLink: `https://chat.whatsapp.com/${code}` };
     },
   } as const;
 }

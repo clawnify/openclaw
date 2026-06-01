@@ -64,6 +64,15 @@ describe("createWebSendApi", () => {
     ): Promise<WAMessage | undefined> => ({ key: { id: "msg-1" } }) as WAMessage,
   );
   const sendPresenceUpdate = vi.fn(async () => {});
+  const groupCreate = vi.fn(async (subject: string, _participants: string[]) => ({
+    id: "120363000000000000@g.us",
+    subject,
+  }));
+  const groupParticipantsUpdate = vi.fn(
+    async (_jid: string, participants: string[], _action: "add") =>
+      participants.map((jid) => ({ status: "200", jid })),
+  );
+  const groupInviteCode = vi.fn(async (_jid: string) => "INVITE1234");
   let api: ReturnType<typeof createWebSendApi>;
 
   beforeEach(() => {
@@ -71,7 +80,13 @@ describe("createWebSendApi", () => {
     imageOps.getImageMetadata.mockResolvedValue(null);
     imageOps.resizeToJpeg.mockRejectedValue(new Error("unexpected thumbnail generation"));
     api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
     });
   });
@@ -230,7 +245,13 @@ describe("createWebSendApi", () => {
 
   it("adds native mention metadata to group text sends", async () => {
     api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       resolveOutboundMentions: ({ jid, text }) =>
         resolveWhatsAppOutboundMentions({
@@ -290,7 +311,13 @@ describe("createWebSendApi", () => {
 
   it("adds native mention metadata to group media captions", async () => {
     api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       resolveOutboundMentions: ({ jid, text }) =>
         resolveWhatsAppOutboundMentions({
@@ -314,7 +341,13 @@ describe("createWebSendApi", () => {
 
   it("uses resolved mention caption text for forced-document media", async () => {
     api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       resolveOutboundMentions: ({ jid, text }) =>
         resolveWhatsAppOutboundMentions({
@@ -536,6 +569,41 @@ describe("createWebSendApi", () => {
       id: "quoted-1",
     });
   });
+
+  it("createGroup normalizes E.164 participants to JIDs and returns the new group JID", async () => {
+    const result = await api.createGroup("Team", ["+15555550000", "15555550001"]);
+    expect(groupCreate).toHaveBeenCalledWith("Team", [
+      "15555550000@s.whatsapp.net",
+      "15555550001@s.whatsapp.net",
+    ]);
+    expect(result).toEqual({ groupJid: "120363000000000000@g.us", subject: "Team" });
+  });
+
+  it("addGroupParticipants normalizes participants and returns per-participant status", async () => {
+    const result = await api.addGroupParticipants("120363000000000000@g.us", ["+15555550002"]);
+    expect(groupParticipantsUpdate).toHaveBeenCalledWith(
+      "120363000000000000@g.us",
+      ["15555550002@s.whatsapp.net"],
+      "add",
+    );
+    expect(result).toEqual([{ jid: "15555550002@s.whatsapp.net", status: "200" }]);
+  });
+
+  it("getGroupInviteCode returns the code and a full invite link", async () => {
+    const result = await api.getGroupInviteCode("120363000000000000@g.us");
+    expect(groupInviteCode).toHaveBeenCalledWith("120363000000000000@g.us");
+    expect(result).toEqual({
+      code: "INVITE1234",
+      inviteLink: "https://chat.whatsapp.com/INVITE1234",
+    });
+  });
+
+  it("getGroupInviteCode throws when no code is returned", async () => {
+    groupInviteCode.mockResolvedValueOnce(undefined as unknown as string);
+    await expect(api.getGroupInviteCode("120363000000000000@g.us")).rejects.toThrow(
+      /No invite code/,
+    );
+  });
 });
 
 // Integration tests for issue #67378: createWebSendApi must route outbound
@@ -551,6 +619,15 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
     ): Promise<WAMessage | undefined> => ({ key: { id: "msg-1" } }) as WAMessage,
   );
   const sendPresenceUpdate = vi.fn(async () => {});
+  const groupCreate = vi.fn(async (subject: string, _participants: string[]) => ({
+    id: "120363000000000000@g.us",
+    subject,
+  }));
+  const groupParticipantsUpdate = vi.fn(
+    async (_jid: string, participants: string[], _action: "add") =>
+      participants.map((jid) => ({ status: "200", jid })),
+  );
+  const groupInviteCode = vi.fn(async (_jid: string) => "INVITE1234");
   let authDir: string;
 
   beforeEach(() => {
@@ -565,7 +642,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("resolves PN to LID for sendMessage when authDir is provided", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       authDir,
     });
@@ -575,7 +658,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("falls back to PN s.whatsapp.net when no LID mapping exists", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       authDir,
     });
@@ -585,7 +674,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("resolves PN to LID for sendPoll", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       authDir,
     });
@@ -600,7 +695,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("resolves PN to LID for sendReaction", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       authDir,
     });
@@ -622,7 +723,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("resolves PN to LID for sendComposingTo presence", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       authDir,
     });
@@ -632,7 +739,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("skips newsletter composing presence when authDir is provided", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       authDir,
     });
@@ -642,7 +755,13 @@ describe("createWebSendApi LID resolution (issue #67378)", () => {
 
   it("preserves legacy behavior (no authDir → PN-only routing)", async () => {
     const api = createWebSendApi({
-      sock: { sendMessage, sendPresenceUpdate },
+      sock: {
+        sendMessage,
+        sendPresenceUpdate,
+        groupCreate,
+        groupParticipantsUpdate,
+        groupInviteCode,
+      },
       defaultAccountId: "main",
       // authDir intentionally omitted
     });

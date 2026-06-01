@@ -84,6 +84,17 @@ describe("web outbound", () => {
   const sendMessage = vi.fn(async () => acceptedSendResult("text", "msg123"));
   const sendPoll = vi.fn(async () => acceptedSendResult("poll", "poll123"));
   const sendReaction = vi.fn(async () => acceptedSendResult("reaction", "reaction123"));
+  const createGroup = vi.fn(async (subject: string) => ({
+    groupJid: "120363000000000000@g.us",
+    subject,
+  }));
+  const addGroupParticipants = vi.fn(async (_groupJid: string, participants: string[]) =>
+    participants.map((jid) => ({ jid, status: "200" })),
+  );
+  const getGroupInviteCode = vi.fn(async () => ({
+    code: "INVITE1234",
+    inviteLink: "https://chat.whatsapp.com/INVITE1234",
+  }));
 
   beforeAll(async () => {
     ({ sendMessageWhatsApp, sendPollWhatsApp, sendReactionWhatsApp } = await import("./send.js"));
@@ -123,6 +134,9 @@ describe("web outbound", () => {
       sendMessage,
       sendPoll,
       sendReaction,
+      createGroup,
+      addGroupParticipants,
+      getGroupInviteCode,
     });
   });
 
@@ -196,6 +210,9 @@ describe("web outbound", () => {
       sendMessage,
       sendPoll,
       sendReaction,
+      createGroup,
+      addGroupParticipants,
+      getGroupInviteCode,
     });
 
     const result = await sendMessageWhatsApp("+1555", "hi", {
@@ -647,6 +664,9 @@ describe("web outbound", () => {
       sendMessage,
       sendPoll,
       sendReaction,
+      createGroup,
+      addGroupParticipants,
+      getGroupInviteCode,
     });
     loadWebMediaMock.mockResolvedValueOnce({
       buffer: Buffer.from("img"),

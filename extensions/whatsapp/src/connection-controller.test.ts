@@ -37,6 +37,17 @@ function createListenerStub(messageId = "ok") {
     sendPoll: vi.fn(async () => acceptedSendResult("poll", messageId)),
     sendReaction: vi.fn(async () => acceptedSendResult("reaction", messageId)),
     sendComposingTo: vi.fn(async () => {}),
+    createGroup: vi.fn(async (subject: string) => ({
+      groupJid: "120363000000000000@g.us",
+      subject,
+    })),
+    addGroupParticipants: vi.fn(async (_groupJid: string, participants: string[]) =>
+      participants.map((jid) => ({ jid, status: "200" })),
+    ),
+    getGroupInviteCode: vi.fn(async () => ({
+      code: "INVITE1234",
+      inviteLink: "https://chat.whatsapp.com/INVITE1234",
+    })),
   };
 }
 

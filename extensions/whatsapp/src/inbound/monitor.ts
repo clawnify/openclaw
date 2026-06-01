@@ -1263,6 +1263,27 @@ export async function attachWebInboxToSocket(
         }
         return currentSock.sendPresenceUpdate(presenceLocal, jid);
       },
+      groupCreate: (subject: string, participants: string[]) => {
+        const currentSock = getCurrentSock();
+        if (!currentSock) {
+          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
+        }
+        return currentSock.groupCreate(subject, participants);
+      },
+      groupParticipantsUpdate: (jid: string, participants: string[], action: "add") => {
+        const currentSock = getCurrentSock();
+        if (!currentSock) {
+          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
+        }
+        return currentSock.groupParticipantsUpdate(jid, participants, action);
+      },
+      groupInviteCode: (jid: string) => {
+        const currentSock = getCurrentSock();
+        if (!currentSock) {
+          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
+        }
+        return currentSock.groupInviteCode(jid);
+      },
     },
     defaultAccountId: options.accountId,
     resolveOutboundMentions: ({ jid, text }) => resolveOutboundMentionsForGroup(jid, text),

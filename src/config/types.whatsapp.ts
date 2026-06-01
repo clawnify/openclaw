@@ -18,6 +18,12 @@ export type WhatsAppActionConfig = {
   reactions?: boolean;
   sendMessage?: boolean;
   polls?: boolean;
+  /**
+   * Allow the agent to create groups, add participants, and read group invite
+   * links via the WhatsApp group tools. Default: false (these actions can add
+   * arbitrary people to chats, so they are opt-in).
+   */
+  groups?: boolean;
 };
 
 export type WhatsAppReactionLevel = ReactionLevel;
