@@ -92,7 +92,8 @@ jobs:
         id: pack
         run: |
           test -f dist/extensions/browser/index.js || { echo "missing compiled browser bundle"; exit 1; }
-          grep -rq "resolveEnvInActRequest" dist/extensions/browser/ || { echo "patch not present in built bundle"; exit 1; }
+          # Identifiers are minified; assert on a string literal from env-secrets.ts.
+          grep -rq "providers.<env>.allowlist" dist/extensions/browser/ || { echo "patch not present in built bundle"; exit 1; }
           VERSION="${{ steps.target.outputs.tag }}"; VERSION="${VERSION#v}"
           TARBALL="openclaw-browser-bundle-overlay-${VERSION}.tgz"
           tar czf "$TARBALL" -C dist/extensions browser
