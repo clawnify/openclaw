@@ -2473,6 +2473,7 @@ export async function dispatchReplyFromConfig(
     const replyConfig = withFullRuntimeReplyConfig(
       params.configOverride ? (applyMergePatch(cfg, params.configOverride) as OpenClawConfig) : cfg,
     );
+    let observedReplyDelivery = false;
     recordAgentDispatchStarted();
     const replyResult = await runWithDispatchAbortSignal(getDispatchAbortSignal(), () =>
       traceReplyPhase("reply.run_reply_resolver", () =>
@@ -2481,6 +2482,10 @@ export async function dispatchReplyFromConfig(
           {
             ...getReplyOptions(),
             sourceReplyDeliveryMode,
+            onObservedReplyDelivery: () => {
+              observedReplyDelivery = true;
+              params.replyOptions?.onObservedReplyDelivery?.();
+            },
             suppressToolErrorWarnings,
             shouldSuppressToolErrorWarnings,
             typingPolicy: typing.typingPolicy,
@@ -2983,9 +2988,10 @@ export async function dispatchReplyFromConfig(
     return attachSourceReplyDeliveryMode({
       queuedFinal,
       counts,
-      ...(!queuedFinal && !emptyFinalAllowedAsSilent
+      ...(!observedReplyDelivery && !queuedFinal && !emptyFinalAllowedAsSilent
         ? { noVisibleReplyFallbackEligible: true }
         : {}),
+      ...(observedReplyDelivery ? { observedReplyDelivery } : {}),
       ...(beforeAgentRunBlocked ? { beforeAgentRunBlocked } : {}),
     });
   } catch (err) {
