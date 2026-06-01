@@ -1,8 +1,8 @@
 diff --git a/extensions/browser/skills/browser-automation/SKILL.md b/extensions/browser/skills/browser-automation/SKILL.md
-index b0516b4e33..81c885c3ef 100644
+index 506d8c215e..aaa0ecaa49 100644
 --- a/extensions/browser/skills/browser-automation/SKILL.md
 +++ b/extensions/browser/skills/browser-automation/SKILL.md
-@@ -34,6 +34,24 @@ Use this skill when you need the `browser` tool for anything beyond a single pag
+@@ -33,6 +33,24 @@ Use this skill when you need the `browser` tool for anything beyond a single pag
     - If the page needs login, permission, captcha, 2FA, camera/microphone approval, or another manual step, stop and tell the user exactly what is needed.
     - Do not claim the browser is not logged in just because the current page shows a permission or onboarding dialog. Inspect the visible UI first.
  
@@ -28,18 +28,18 @@ index b0516b4e33..81c885c3ef 100644
  
  Before creating a tab for a named task, list tabs and reuse an existing matching label or URL when it is still usable.
 diff --git a/extensions/browser/src/browser-tool.actions.ts b/extensions/browser/src/browser-tool.actions.ts
-index e85e397444..34b9ea2968 100644
+index f7ac173672..a949f75211 100644
 --- a/extensions/browser/src/browser-tool.actions.ts
 +++ b/extensions/browser/src/browser-tool.actions.ts
-@@ -24,6 +24,7 @@ import {
-   DEFAULT_BROWSER_ACTION_TIMEOUT_MS,
-   DEFAULT_BROWSER_SNAPSHOT_TIMEOUT_MS,
- } from "./browser/constants.js";
+@@ -17,6 +17,7 @@ import {
+   wrapExternalContent,
+ } from "./browser-tool.runtime.js";
+ import { DEFAULT_BROWSER_ACTION_TIMEOUT_MS } from "./browser/constants.js";
 +import { redactKnownSecrets, resolveEnvInActRequest } from "./browser/env-secrets.js";
  
  const browserToolActionDeps = {
    browserAct,
-@@ -451,7 +452,9 @@ export async function executeSnapshotAction(params: {
+@@ -430,7 +431,9 @@ export async function executeSnapshotAction(params: {
          },
        };
      }
@@ -50,7 +50,7 @@ index e85e397444..34b9ea2968 100644
      const wrappedSnapshot = wrapExternalContent(extractedText, {
        source: "browser",
        includeWarning: true,
-@@ -557,7 +560,15 @@ export async function executeActAction(params: {
+@@ -536,7 +539,15 @@ export async function executeActAction(params: {
    onTabActivity?: (targetId: string | undefined) => void;
  }): Promise<AgentToolResult<unknown>> {
    const { request, baseUrl, profile, proxyRequest } = params;
