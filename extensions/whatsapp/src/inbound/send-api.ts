@@ -18,6 +18,7 @@ import {
   normalizeWhatsAppSendResult,
   type WhatsAppSendResult,
 } from "./send-result.js";
+import type { ChatSummary, MessageSummary } from "./conversation-store.js";
 import type { ActiveWebSendOptions } from "./types.js";
 
 function recordWhatsAppOutbound(accountId: string) {
@@ -61,6 +62,12 @@ export function createWebSendApi(params: {
   // proactive sends to LID-addressed contacts reach the recipient instead of
   // ending up in a sender-only ghost chat (#67378). Defaults to PN-only.
   authDir?: string;
+  // In-memory mirror of chats + recent messages, populated from socket events.
+  // Backs listChats / readConversation. Absent on call sites that don't wire it.
+  conversationStore?: {
+    listChats: () => ChatSummary[];
+    readConversation: (jid: string, limit?: number) => MessageSummary[];
+  };
 }) {
   const resolveOutboundJid = (recipient: string): string =>
     params.authDir
@@ -235,6 +242,18 @@ export function createWebSendApi(params: {
         throw new Error(`No invite code returned for group ${groupJid}.`);
       }
       return { code, inviteLink: `https://chat.whatsapp.com/${code}` };
+    },
+    listChats: async (): Promise<ChatSummary[]> => {
+      if (!params.conversationStore) {
+        throw new Error("WhatsApp conversation mirror is unavailable on this listener.");
+      }
+      return params.conversationStore.listChats();
+    },
+    readConversation: async (jid: string, limit?: number): Promise<MessageSummary[]> => {
+      if (!params.conversationStore) {
+        throw new Error("WhatsApp conversation mirror is unavailable on this listener.");
+      }
+      return params.conversationStore.readConversation(jid, limit);
     },
   } as const;
 }

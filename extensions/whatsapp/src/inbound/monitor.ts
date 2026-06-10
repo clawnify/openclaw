@@ -39,6 +39,7 @@ import {
   hasInboundUserContent,
 } from "./extract.js";
 import { attachEmitterListener, closeInboundMonitorSocket } from "./lifecycle.js";
+import { ConversationStore } from "./conversation-store.js";
 import { downloadInboundMedia, downloadQuotedInboundMedia } from "./media.js";
 import {
   addWhatsAppOutboundMentionsToContent,
@@ -958,6 +959,18 @@ export async function attachWebInboxToSocket(
     handleConnectionUpdate as unknown as (...args: unknown[]) => void,
   );
 
+  // In-memory mirror of chats + recent messages (RAM only, never persisted).
+  // Powers the whatsapp_list_chats / whatsapp_read_conversation agent tools;
+  // rebuilt from WhatsApp's on-connect history sync on every reconnect.
+  const conversationStore = new ConversationStore();
+  const detachConversationStore = conversationStore.bind(
+    sock.ev as unknown as {
+      on: (event: string, listener: (...args: unknown[]) => void) => void;
+      off?: (event: string, listener: (...args: unknown[]) => void) => void;
+      removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
+    },
+  );
+
   void (async () => {
     try {
       const groups = await sock.groupFetchAllParticipating();
@@ -1024,6 +1037,7 @@ export async function attachWebInboxToSocket(
     defaultAccountId: options.accountId,
     resolveOutboundMentions: ({ jid, text }) => resolveOutboundMentionsForGroup(jid, text),
     authDir: options.authDir,
+    conversationStore,
   });
 
   return {
@@ -1031,6 +1045,7 @@ export async function attachWebInboxToSocket(
       try {
         detachMessagesUpsert();
         detachConnectionUpdate();
+        detachConversationStore();
         await drainInboundBeforeSocketCloseWithTimeout();
       } catch (err) {
         logWhatsAppVerbose(options.verbose, `Inbound close drain failed: ${String(err)}`);

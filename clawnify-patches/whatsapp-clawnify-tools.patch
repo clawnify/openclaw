@@ -1,0 +1,948 @@
+diff --git a/extensions/whatsapp/src/agent-tools-conversations.ts b/extensions/whatsapp/src/agent-tools-conversations.ts
+new file mode 100644
+index 0000000000..2ea4d67d33
+--- /dev/null
++++ b/extensions/whatsapp/src/agent-tools-conversations.ts
+@@ -0,0 +1,141 @@
++import type { ChannelAgentTool } from "openclaw/plugin-sdk/channel-contract";
++import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
++import { Type } from "typebox";
++import { getActiveWebListener, resolveWebAccountId } from "./active-listener.js";
++import type { ChatSummary, MessageSummary } from "./inbound/conversation-store.js";
++import type { ActiveWebListener } from "./inbound/types.js";
++
++// Interim build gate, mirroring the group tools: conversation reading is opt-in
++// via OPENCLAW_WHATSAPP_CONVERSATIONS rather than a channels.whatsapp.actions
++// config flag (stock core's strict zod schema would reject a new key there).
++// Reading a user's full chat list + message history is more sensitive than the
++// group actions, so it gets its OWN explicit gate — enabling groups must not
++// silently grant history access.
++function areWhatsAppConversationToolsEnabled(): boolean {
++  const raw = process.env.OPENCLAW_WHATSAPP_CONVERSATIONS;
++  return raw === "1" || raw === "true";
++}
++
++function requireConversationCapableListener(accountIdArg: unknown): ActiveWebListener {
++  if (!areWhatsAppConversationToolsEnabled()) {
++    throw new Error(
++      "WhatsApp conversation tools are disabled. Set OPENCLAW_WHATSAPP_CONVERSATIONS=1 to enable them.",
++    );
++  }
++  const cfg = getRuntimeConfig();
++  const accountId = resolveWebAccountId({
++    cfg,
++    accountId: typeof accountIdArg === "string" ? accountIdArg : null,
++  });
++  const listener = getActiveWebListener(accountId);
++  if (!listener) {
++    throw new Error(`WhatsApp is not linked (account: ${accountId}). Link it first, then retry.`);
++  }
++  return listener;
++}
++
++function readChatJid(value: unknown): string {
++  const jid = typeof value === "string" ? value.trim() : "";
++  if (!jid) {
++    throw new Error("jid is required (a chat JID from whatsapp_list_chats, e.g. 1555...@s.whatsapp.net).");
++  }
++  return jid;
++}
++
++function formatTimestamp(unixSeconds: number): string {
++  if (!unixSeconds) {
++    return "unknown time";
++  }
++  return new Date(unixSeconds * 1000).toISOString();
++}
++
++function formatChatLine(chat: ChatSummary): string {
++  const label = chat.name ? `${chat.name} (${chat.jid})` : chat.jid;
++  const unread = chat.unreadCount > 0 ? ` — ${chat.unreadCount} unread` : "";
++  const preview = chat.lastMessageText ? ` — last: ${chat.lastMessageText}` : "";
++  return `${label}${unread}${preview}`;
++}
++
++function formatMessageLine(msg: MessageSummary): string {
++  const who = msg.fromMe ? "me" : (msg.sender ?? "unknown");
++  const body = msg.text ?? msg.media ?? "";
++  return `[${formatTimestamp(msg.timestamp)}] ${who}: ${body}`;
++}
++
++function createWhatsAppListChatsTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp List Chats",
++    name: "whatsapp_list_chats",
++    description:
++      "List the WhatsApp conversations currently known to the agent, most recent first. " +
++      "Reads a live in-memory mirror (recent window only — not the full archive). " +
++      "Use the returned JID with whatsapp_read_conversation to inspect a chat.",
++    parameters: Type.Object({
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { accountId } = args as { accountId?: string };
++      const listener = requireConversationCapableListener(accountId);
++      const chats = await listener.listChats();
++      const text = chats.length
++        ? chats.map(formatChatLine).join("\n")
++        : "No conversations are mirrored yet. They populate as WhatsApp syncs history and new messages arrive.";
++      return {
++        content: [{ type: "text", text }],
++        details: { count: chats.length, chats },
++      };
++    },
++  };
++}
++
++function createWhatsAppReadConversationTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Read Conversation",
++    name: "whatsapp_read_conversation",
++    description:
++      "Read recent messages of a WhatsApp conversation (oldest to newest) from the in-memory " +
++      "mirror. Media messages appear as placeholders like <media:image>. Pass a JID from " +
++      "whatsapp_list_chats.",
++    parameters: Type.Object({
++      jid: Type.String({
++        description: "Chat JID, e.g. 15551234567@s.whatsapp.net (direct) or 1203...@g.us (group).",
++      }),
++      limit: Type.Optional(
++        Type.Number({ description: "Max messages to return (default 30, capped at 50)." }),
++      ),
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { jid, limit, accountId } = args as {
++        jid?: unknown;
++        limit?: number;
++        accountId?: string;
++      };
++      const chatJid = readChatJid(jid);
++      const listener = requireConversationCapableListener(accountId);
++      const messages = await listener.readConversation(
++        chatJid,
++        typeof limit === "number" ? limit : undefined,
++      );
++      const text = messages.length
++        ? messages.map(formatMessageLine).join("\n")
++        : `No mirrored messages for ${chatJid}. The mirror holds a recent window only.`;
++      return {
++        content: [{ type: "text", text }],
++        details: { jid: chatJid, count: messages.length, messages },
++      };
++    },
++  };
++}
++
++/**
++ * WhatsApp conversation read tools, opt-in via OPENCLAW_WHATSAPP_CONVERSATIONS.
++ * Returned only when enabled, so disabled installs don't advertise tools the
++ * agent can't use. Each tool re-checks the gate + requires an active listener.
++ */
++export function createWhatsAppConversationTools(): ChannelAgentTool[] {
++  if (!areWhatsAppConversationToolsEnabled()) {
++    return [];
++  }
++  return [createWhatsAppListChatsTool(), createWhatsAppReadConversationTool()];
++}
+diff --git a/extensions/whatsapp/src/agent-tools-groups.ts b/extensions/whatsapp/src/agent-tools-groups.ts
+new file mode 100644
+index 0000000000..9959062a7c
+--- /dev/null
++++ b/extensions/whatsapp/src/agent-tools-groups.ts
+@@ -0,0 +1,167 @@
++import type { ChannelAgentTool } from "openclaw/plugin-sdk/channel-contract";
++import { getActiveWebListener, resolveWebAccountId } from "./active-listener.js";
++import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
++import type { ActiveWebListener } from "./inbound/types.js";
++import { Type } from "typebox";
++
++const GROUP_JID_PATTERN = "@g.us";
++
++// Interim build gate: the group tools are opt-in via the
++// OPENCLAW_WHATSAPP_GROUPS env var rather than a channels.whatsapp.actions
++// config flag. Stock OpenClaw core (which we run unmodified) validates
++// channels.whatsapp.actions with a strict zod schema, so introducing a new
++// `groups` key there would be rejected at gateway start. The env gate keeps
++// this plugin installable on stock core. (The upstream PR uses the proper
++// config gate; this divergence disappears when that lands.)
++function areWhatsAppGroupActionsEnabled(): boolean {
++  const raw = process.env.OPENCLAW_WHATSAPP_GROUPS;
++  return raw === "1" || raw === "true";
++}
++
++function requireGroupCapableListener(accountIdArg: unknown): ActiveWebListener {
++  if (!areWhatsAppGroupActionsEnabled()) {
++    throw new Error(
++      "WhatsApp group actions are disabled. Set OPENCLAW_WHATSAPP_GROUPS=1 to enable them.",
++    );
++  }
++  const cfg = getRuntimeConfig();
++  const accountId = resolveWebAccountId({
++    cfg,
++    accountId: typeof accountIdArg === "string" ? accountIdArg : null,
++  });
++  const listener = getActiveWebListener(accountId);
++  if (!listener) {
++    throw new Error(
++      `WhatsApp is not linked (account: ${accountId}). Link it first, then retry.`,
++    );
++  }
++  return listener;
++}
++
++function readParticipants(value: unknown): string[] {
++  if (!Array.isArray(value) || value.length === 0) {
++    throw new Error("participants must be a non-empty array of phone numbers (E.164).");
++  }
++  const participants = value
++    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
++    .filter(Boolean);
++  if (participants.length === 0) {
++    throw new Error("participants must contain at least one phone number (E.164).");
++  }
++  return participants;
++}
++
++function readGroupJid(value: unknown): string {
++  const jid = typeof value === "string" ? value.trim() : "";
++  if (!jid.endsWith(GROUP_JID_PATTERN)) {
++    throw new Error("group_jid must be a WhatsApp group JID, e.g. 120363012345678901@g.us.");
++  }
++  return jid;
++}
++
++function createWhatsAppGroupCreateTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Create Group",
++    name: "whatsapp_group_create",
++    description:
++      "Create a new WhatsApp group with the given subject and participants. Returns the new group JID — use it for future group operations.",
++    parameters: Type.Object({
++      subject: Type.String({ description: "Group name." }),
++      participants: Type.Array(Type.String(), {
++        description: "Phone numbers in E.164 format, e.g. +15551234567.",
++      }),
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { subject, participants, accountId } = args as {
++        subject?: string;
++        participants?: unknown;
++        accountId?: string;
++      };
++      const trimmedSubject = typeof subject === "string" ? subject.trim() : "";
++      if (!trimmedSubject) {
++        throw new Error("subject is required.");
++      }
++      const listener = requireGroupCapableListener(accountId);
++      const result = await listener.createGroup(trimmedSubject, readParticipants(participants));
++      return {
++        content: [
++          { type: "text", text: `Created WhatsApp group "${result.subject}" (${result.groupJid}).` },
++        ],
++        details: result,
++      };
++    },
++  };
++}
++
++function createWhatsAppGroupAddTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Add Group Participants",
++    name: "whatsapp_group_add_participants",
++    description: "Add participants to an existing WhatsApp group.",
++    parameters: Type.Object({
++      group_jid: Type.String({ description: "Group JID, e.g. 120363012345678901@g.us." }),
++      participants: Type.Array(Type.String(), {
++        description: "Phone numbers in E.164 format to add.",
++      }),
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { group_jid, participants, accountId } = args as {
++        group_jid?: unknown;
++        participants?: unknown;
++        accountId?: string;
++      };
++      const groupJid = readGroupJid(group_jid);
++      const listener = requireGroupCapableListener(accountId);
++      const results = await listener.addGroupParticipants(groupJid, readParticipants(participants));
++      return {
++        content: [
++          {
++            type: "text",
++            text: results.map((r) => `${r.jid ?? "(unknown)"}: ${r.status}`).join("\n"),
++          },
++        ],
++        details: { groupJid, results },
++      };
++    },
++  };
++}
++
++function createWhatsAppGroupInviteLinkTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Group Invite Link",
++    name: "whatsapp_group_invite_link",
++    description: "Get the invite link for a WhatsApp group the bot administers.",
++    parameters: Type.Object({
++      group_jid: Type.String({ description: "Group JID, e.g. 120363012345678901@g.us." }),
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { group_jid, accountId } = args as { group_jid?: unknown; accountId?: string };
++      const groupJid = readGroupJid(group_jid);
++      const listener = requireGroupCapableListener(accountId);
++      const result = await listener.getGroupInviteCode(groupJid);
++      return {
++        content: [{ type: "text", text: result.inviteLink }],
++        details: { groupJid, ...result },
++      };
++    },
++  };
++}
++
++/**
++ * WhatsApp group-management agent tools, opt-in via OPENCLAW_WHATSAPP_GROUPS.
++ * Returned only when enabled, so disabled installs don't advertise tools the
++ * agent can't use. Each tool re-checks the gate + requires an active listener.
++ */
++export function createWhatsAppGroupTools(): ChannelAgentTool[] {
++  if (!areWhatsAppGroupActionsEnabled()) {
++    return [];
++  }
++  return [
++    createWhatsAppGroupCreateTool(),
++    createWhatsAppGroupAddTool(),
++    createWhatsAppGroupInviteLinkTool(),
++  ];
++}
+diff --git a/extensions/whatsapp/src/channel.ts b/extensions/whatsapp/src/channel.ts
+index 93fd42d333..bb814ac206 100644
+--- a/extensions/whatsapp/src/channel.ts
++++ b/extensions/whatsapp/src/channel.ts
+@@ -8,6 +8,8 @@ import {
+ } from "openclaw/plugin-sdk/status-helpers";
+ import { resolveWhatsAppAccount, type ResolvedWhatsAppAccount } from "./accounts.js";
+ import { createWhatsAppLoginTool } from "./agent-tools-login.js";
++import { createWhatsAppConversationTools } from "./agent-tools-conversations.js";
++import { createWhatsAppGroupTools } from "./agent-tools-groups.js";
+ import { whatsappApprovalAuth } from "./approval-auth.js";
+ import type { WebChannelStatus } from "./auto-reply/types.js";
+ import {
+@@ -93,7 +95,11 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
+           return (await channelRuntime.readWebAuthState(account.authDir)) === "linked";
+         },
+       }),
+-      agentTools: () => [createWhatsAppLoginTool()],
++      agentTools: () => [
++        createWhatsAppLoginTool(),
++        ...createWhatsAppGroupTools(),
++        ...createWhatsAppConversationTools(),
++      ],
+       allowlist: buildDmGroupAccountAllowlistAdapter({
+         channelId: "whatsapp",
+         resolveAccount: resolveWhatsAppAccount,
+diff --git a/extensions/whatsapp/src/inbound/conversation-store.test.ts b/extensions/whatsapp/src/inbound/conversation-store.test.ts
+new file mode 100644
+index 0000000000..2f363bd600
+--- /dev/null
++++ b/extensions/whatsapp/src/inbound/conversation-store.test.ts
+@@ -0,0 +1,138 @@
++import type { Chat, WAMessage } from "baileys";
++import { describe, expect, it } from "vitest";
++import { ConversationStore } from "./conversation-store.js";
++
++function chat(id: string, overrides: Partial<Chat> = {}): Chat {
++  return { id, conversationTimestamp: 1000, ...overrides } as Chat;
++}
++
++function textMessage(
++  remoteJid: string,
++  text: string,
++  opts: { id?: string; ts?: number; fromMe?: boolean; participant?: string } = {},
++): WAMessage {
++  return {
++    key: {
++      remoteJid,
++      fromMe: opts.fromMe ?? false,
++      id: opts.id ?? `m-${text}`,
++      participant: opts.participant,
++    },
++    message: { conversation: text },
++    messageTimestamp: opts.ts ?? 1000,
++  } as WAMessage;
++}
++
++describe("ConversationStore", () => {
++  it("lists chats most-recent-first with metadata", () => {
++    const store = new ConversationStore();
++    store.ingestHistory({
++      chats: [
++        chat("a@s.whatsapp.net", { name: "Alice", conversationTimestamp: 100, unreadCount: 2 }),
++        chat("b@s.whatsapp.net", { name: "Bob", conversationTimestamp: 300 }),
++        chat("c@s.whatsapp.net", { name: "Carol", conversationTimestamp: 200 }),
++      ],
++    });
++
++    const chats = store.listChats();
++    expect(chats.map((c) => c.jid)).toEqual([
++      "b@s.whatsapp.net",
++      "c@s.whatsapp.net",
++      "a@s.whatsapp.net",
++    ]);
++    expect(chats[2]).toMatchObject({ name: "Alice", unreadCount: 2 });
++  });
++
++  it("reads a conversation oldest-to-newest and updates the chat preview", () => {
++    const store = new ConversationStore();
++    store.ingestHistory({ chats: [chat("a@s.whatsapp.net", { name: "Alice" })] });
++    store.ingestMessages({
++      messages: [
++        textMessage("a@s.whatsapp.net", "first", { id: "1", ts: 10 }),
++        textMessage("a@s.whatsapp.net", "second", { id: "2", ts: 20, fromMe: true }),
++      ],
++    });
++
++    const messages = store.readConversation("a@s.whatsapp.net");
++    expect(messages.map((m) => m.text)).toEqual(["first", "second"]);
++    expect(messages[1]).toMatchObject({ fromMe: true });
++
++    const alice = store.listChats().find((c) => c.jid === "a@s.whatsapp.net");
++    expect(alice?.lastMessageText).toBe("second");
++    expect(alice?.lastMessageTimestamp).toBe(20);
++  });
++
++  it("creates a chat entry for a DM seen only via messages", () => {
++    const store = new ConversationStore();
++    store.ingestMessages({ messages: [textMessage("new@s.whatsapp.net", "hi", { ts: 50 })] });
++    expect(store.listChats().map((c) => c.jid)).toEqual(["new@s.whatsapp.net"]);
++    expect(store.readConversation("new@s.whatsapp.net")).toHaveLength(1);
++  });
++
++  it("represents media messages as placeholders, text-first", () => {
++    const store = new ConversationStore();
++    const imageMsg = {
++      key: { remoteJid: "a@s.whatsapp.net", id: "img", fromMe: false },
++      message: { imageMessage: { caption: "" } },
++      messageTimestamp: 5,
++    } as unknown as WAMessage;
++    store.ingestMessages({ messages: [imageMsg] });
++    expect(store.readConversation("a@s.whatsapp.net")[0].media).toBe("<media:image>");
++  });
++
++  it("skips status broadcasts and contentless messages", () => {
++    const store = new ConversationStore();
++    store.ingestMessages({
++      messages: [
++        textMessage("status@broadcast", "ignored", { ts: 1 }),
++        { key: { remoteJid: "a@s.whatsapp.net", id: "empty" }, message: {} } as WAMessage,
++      ],
++    });
++    expect(store.listChats()).toHaveLength(0);
++  });
++
++  it("dedupes messages by id", () => {
++    const store = new ConversationStore();
++    const msg = textMessage("a@s.whatsapp.net", "dupe", { id: "x", ts: 1 });
++    store.ingestMessages({ messages: [msg] });
++    store.ingestMessages({ messages: [msg] });
++    expect(store.readConversation("a@s.whatsapp.net")).toHaveLength(1);
++  });
++
++  it("caps messages per chat and honours the read limit", () => {
++    const store = new ConversationStore();
++    const messages = Array.from({ length: 80 }, (_, i) =>
++      textMessage("a@s.whatsapp.net", `msg-${i}`, { id: `id-${i}`, ts: i + 1 }),
++    );
++    store.ingestMessages({ messages });
++
++    // Buffer capped at 50 → only the newest 50 survive.
++    const all = store.readConversation("a@s.whatsapp.net", 999);
++    expect(all).toHaveLength(50);
++    expect(all[0].text).toBe("msg-30");
++    expect(all.at(-1)?.text).toBe("msg-79");
++
++    // Read limit returns the newest N.
++    const recent = store.readConversation("a@s.whatsapp.net", 3);
++    expect(recent.map((m) => m.text)).toEqual(["msg-77", "msg-78", "msg-79"]);
++  });
++
++  it("binds to an emitter and detaches cleanly", () => {
++    const store = new ConversationStore();
++    const listeners = new Map<string, (...args: unknown[]) => void>();
++    const ev = {
++      on: (event: string, listener: (...args: unknown[]) => void) => listeners.set(event, listener),
++      off: (event: string) => listeners.delete(event),
++    };
++    const detach = store.bind(ev);
++    expect(listeners.has("messaging-history.set")).toBe(true);
++
++    listeners.get("messages.upsert")?.({
++      messages: [textMessage("a@s.whatsapp.net", "via-event", { ts: 9 })],
++    });
++    expect(store.readConversation("a@s.whatsapp.net")[0].text).toBe("via-event");
++
++    detach();
++    expect(listeners.size).toBe(0);
++  });
++});
+diff --git a/extensions/whatsapp/src/inbound/conversation-store.ts b/extensions/whatsapp/src/inbound/conversation-store.ts
+new file mode 100644
+index 0000000000..bf0ff1dadd
+--- /dev/null
++++ b/extensions/whatsapp/src/inbound/conversation-store.ts
+@@ -0,0 +1,258 @@
++import type { Chat, ChatUpdate, WAMessage } from "baileys";
++import { extractMediaPlaceholder, extractText } from "./extract.js";
++
++/**
++ * In-memory mirror of WhatsApp conversations.
++ *
++ * Baileys exposes no on-demand query API — chat lists and message history
++ * exist ONLY as streamed events (`messaging-history.set`, `chats.upsert`,
++ * `chats.update`, `messages.upsert`). To let the agent list and inspect
++ * conversations we capture those events here, in RAM only. Nothing is ever
++ * written to disk: the mirror is rebuilt from WhatsApp's on-connect history
++ * sync on every reconnect and is gone on process restart.
++ *
++ * Both maps are bounded so a busy account can't grow memory without limit.
++ */
++
++const MAX_CHATS = 500;
++const MAX_MESSAGES_PER_CHAT = 50;
++const STATUS_BROADCAST_JID = "status@broadcast";
++
++export type ChatSummary = {
++  jid: string;
++  name?: string;
++  unreadCount: number;
++  /** Unix seconds of the last known activity in the chat. */
++  lastMessageTimestamp: number;
++  lastMessageText?: string;
++};
++
++export type MessageSummary = {
++  id?: string;
++  fromMe: boolean;
++  /** Sender JID: the participant for groups, the chat JID for direct chats. */
++  sender?: string;
++  /** Unix seconds. */
++  timestamp: number;
++  text?: string;
++  /** Placeholder like `<media:image>` when the message carries non-text content. */
++  media?: string;
++};
++
++type EmitterLike = {
++  on: (event: string, listener: (...args: unknown[]) => void) => void;
++  off?: (event: string, listener: (...args: unknown[]) => void) => void;
++  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
++};
++
++/** Baileys timestamps are `number | Long`; normalize to a plain number. */
++function toNumber(value: unknown): number {
++  if (value == null) {
++    return 0;
++  }
++  if (typeof value === "number") {
++    return value;
++  }
++  const maybeLong = value as { toNumber?: () => number };
++  if (typeof maybeLong.toNumber === "function") {
++    return maybeLong.toNumber();
++  }
++  const coerced = Number(value);
++  return Number.isFinite(coerced) ? coerced : 0;
++}
++
++function chatDisplayName(chat: Partial<Chat>): string | undefined {
++  const name = (chat.name ?? chat.displayName ?? "").trim();
++  return name || undefined;
++}
++
++function toMessageSummary(msg: WAMessage): MessageSummary | null {
++  const text = extractText(msg.message ?? undefined);
++  const media = extractMediaPlaceholder(msg.message ?? undefined);
++  if (!text && !media) {
++    // Receipt / typing / protocol envelope — no user-visible content.
++    return null;
++  }
++  return {
++    id: msg.key?.id ?? undefined,
++    fromMe: Boolean(msg.key?.fromMe),
++    sender: msg.key?.participant ?? msg.key?.remoteJid ?? undefined,
++    timestamp: toNumber(msg.messageTimestamp),
++    text: text ?? undefined,
++    media: media ?? undefined,
++  };
++}
++
++export class ConversationStore {
++  private readonly chats = new Map<string, ChatSummary>();
++  private readonly messages = new Map<string, MessageSummary[]>();
++
++  ingestHistory(set: { chats?: Chat[]; messages?: WAMessage[] }): void {
++    for (const chat of set.chats ?? []) {
++      this.upsertChat(chat);
++    }
++    for (const msg of set.messages ?? []) {
++      this.appendMessage(msg);
++    }
++  }
++
++  ingestChatsUpsert(chats: Chat[]): void {
++    for (const chat of chats ?? []) {
++      this.upsertChat(chat);
++    }
++  }
++
++  ingestChatUpdate(updates: ChatUpdate[]): void {
++    for (const update of updates ?? []) {
++      const jid = update.id;
++      if (!jid) {
++        continue;
++      }
++      const existing = this.chats.get(jid);
++      if (!existing) {
++        this.upsertChat(update as Chat);
++        continue;
++      }
++      const name = chatDisplayName(update);
++      if (name) {
++        existing.name = name;
++      }
++      if (update.unreadCount != null) {
++        existing.unreadCount = Math.max(0, toNumber(update.unreadCount));
++      }
++      const ts = toNumber(update.conversationTimestamp);
++      if (ts) {
++        existing.lastMessageTimestamp = Math.max(existing.lastMessageTimestamp, ts);
++      }
++    }
++  }
++
++  ingestMessages(upsert: { messages?: WAMessage[] }): void {
++    for (const msg of upsert.messages ?? []) {
++      this.appendMessage(msg);
++    }
++  }
++
++  listChats(): ChatSummary[] {
++    return [...this.chats.values()]
++      .sort((a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp)
++      .map((chat) => ({ ...chat }));
++  }
++
++  readConversation(jid: string, limit = 30): MessageSummary[] {
++    const buffer = this.messages.get(jid) ?? [];
++    const count = Math.max(1, Math.min(limit, MAX_MESSAGES_PER_CHAT));
++    return buffer.slice(-count).map((msg) => ({ ...msg }));
++  }
++
++  /** Subscribe the store to a socket's event emitter. Returns a detacher. */
++  bind(ev: EmitterLike): () => void {
++    const detachers = [
++      this.attach(ev, "messaging-history.set", (payload) =>
++        this.ingestHistory(payload as { chats?: Chat[]; messages?: WAMessage[] }),
++      ),
++      this.attach(ev, "chats.upsert", (payload) => this.ingestChatsUpsert(payload as Chat[])),
++      this.attach(ev, "chats.update", (payload) => this.ingestChatUpdate(payload as ChatUpdate[])),
++      this.attach(ev, "messages.upsert", (payload) =>
++        this.ingestMessages(payload as { messages?: WAMessage[] }),
++      ),
++    ];
++    return () => {
++      for (const detach of detachers) {
++        detach();
++      }
++    };
++  }
++
++  private attach(
++    ev: EmitterLike,
++    event: string,
++    handler: (payload: unknown) => void,
++  ): () => void {
++    const listener = (...args: unknown[]) => handler(args[0]);
++    ev.on(event, listener);
++    return () => {
++      if (typeof ev.off === "function") {
++        ev.off(event, listener);
++      } else if (typeof ev.removeListener === "function") {
++        ev.removeListener(event, listener);
++      }
++    };
++  }
++
++  private upsertChat(chat: Partial<Chat>): void {
++    const jid = chat.id;
++    if (!jid || jid === STATUS_BROADCAST_JID) {
++      return;
++    }
++    const existing = this.chats.get(jid);
++    const ts = toNumber(chat.conversationTimestamp);
++    this.chats.set(jid, {
++      jid,
++      name: chatDisplayName(chat) ?? existing?.name,
++      unreadCount:
++        chat.unreadCount != null
++          ? Math.max(0, toNumber(chat.unreadCount))
++          : (existing?.unreadCount ?? 0),
++      lastMessageTimestamp: Math.max(existing?.lastMessageTimestamp ?? 0, ts),
++      lastMessageText: existing?.lastMessageText,
++    });
++    this.evictChatsIfNeeded();
++  }
++
++  private appendMessage(msg: WAMessage): void {
++    const jid = msg.key?.remoteJid;
++    if (!jid || jid === STATUS_BROADCAST_JID) {
++      return;
++    }
++    const summary = toMessageSummary(msg);
++    if (!summary) {
++      return;
++    }
++    const buffer = this.messages.get(jid) ?? [];
++    if (summary.id && buffer.some((existing) => existing.id === summary.id)) {
++      return;
++    }
++    buffer.push(summary);
++    buffer.sort((a, b) => a.timestamp - b.timestamp);
++    if (buffer.length > MAX_MESSAGES_PER_CHAT) {
++      buffer.splice(0, buffer.length - MAX_MESSAGES_PER_CHAT);
++    }
++    this.messages.set(jid, buffer);
++    this.touchChatFromMessage(jid, summary);
++  }
++
++  private touchChatFromMessage(jid: string, summary: MessageSummary): void {
++    const preview = summary.text ?? summary.media;
++    const existing = this.chats.get(jid);
++    if (!existing) {
++      this.chats.set(jid, {
++        jid,
++        unreadCount: 0,
++        lastMessageTimestamp: summary.timestamp,
++        lastMessageText: preview,
++      });
++      this.evictChatsIfNeeded();
++      return;
++    }
++    if (summary.timestamp >= existing.lastMessageTimestamp) {
++      existing.lastMessageTimestamp = summary.timestamp;
++      existing.lastMessageText = preview;
++    }
++  }
++
++  private evictChatsIfNeeded(): void {
++    if (this.chats.size <= MAX_CHATS) {
++      return;
++    }
++    const oldestFirst = [...this.chats.values()].sort(
++      (a, b) => a.lastMessageTimestamp - b.lastMessageTimestamp,
++    );
++    const dropCount = this.chats.size - MAX_CHATS;
++    for (let i = 0; i < dropCount; i++) {
++      const victim = oldestFirst[i];
++      this.chats.delete(victim.jid);
++      this.messages.delete(victim.jid);
++    }
++  }
++}
+diff --git a/extensions/whatsapp/src/inbound/monitor.ts b/extensions/whatsapp/src/inbound/monitor.ts
+index 9ae2c2ab9d..df1c027342 100644
+--- a/extensions/whatsapp/src/inbound/monitor.ts
++++ b/extensions/whatsapp/src/inbound/monitor.ts
+@@ -39,6 +39,7 @@ import {
+   hasInboundUserContent,
+ } from "./extract.js";
+ import { attachEmitterListener, closeInboundMonitorSocket } from "./lifecycle.js";
++import { ConversationStore } from "./conversation-store.js";
+ import { downloadInboundMedia, downloadQuotedInboundMedia } from "./media.js";
+ import {
+   addWhatsAppOutboundMentionsToContent,
+@@ -958,6 +959,18 @@ export async function attachWebInboxToSocket(
+     handleConnectionUpdate as unknown as (...args: unknown[]) => void,
+   );
+ 
++  // In-memory mirror of chats + recent messages (RAM only, never persisted).
++  // Powers the whatsapp_list_chats / whatsapp_read_conversation agent tools;
++  // rebuilt from WhatsApp's on-connect history sync on every reconnect.
++  const conversationStore = new ConversationStore();
++  const detachConversationStore = conversationStore.bind(
++    sock.ev as unknown as {
++      on: (event: string, listener: (...args: unknown[]) => void) => void;
++      off?: (event: string, listener: (...args: unknown[]) => void) => void;
++      removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
++    },
++  );
++
+   void (async () => {
+     try {
+       const groups = await sock.groupFetchAllParticipating();
+@@ -999,10 +1012,32 @@ export async function attachWebInboxToSocket(
+         }
+         return currentSock.sendPresenceUpdate(presence, jid);
+       },
++      groupCreate: (subject: string, participants: string[]) => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        return currentSock.groupCreate(subject, participants);
++      },
++      groupParticipantsUpdate: (jid: string, participants: string[], action: "add") => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        return currentSock.groupParticipantsUpdate(jid, participants, action);
++      },
++      groupInviteCode: (jid: string) => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        return currentSock.groupInviteCode(jid);
++      },
+     },
+     defaultAccountId: options.accountId,
+     resolveOutboundMentions: ({ jid, text }) => resolveOutboundMentionsForGroup(jid, text),
+     authDir: options.authDir,
++    conversationStore,
+   });
+ 
+   return {
+@@ -1010,6 +1045,7 @@ export async function attachWebInboxToSocket(
+       try {
+         detachMessagesUpsert();
+         detachConnectionUpdate();
++        detachConversationStore();
+         await drainInboundBeforeSocketCloseWithTimeout();
+       } catch (err) {
+         logWhatsAppVerbose(options.verbose, `Inbound close drain failed: ${String(err)}`);
+diff --git a/extensions/whatsapp/src/inbound/send-api.ts b/extensions/whatsapp/src/inbound/send-api.ts
+index a204b2d023..3177ebba1f 100644
+--- a/extensions/whatsapp/src/inbound/send-api.ts
++++ b/extensions/whatsapp/src/inbound/send-api.ts
+@@ -18,6 +18,7 @@ import {
+   normalizeWhatsAppSendResult,
+   type WhatsAppSendResult,
+ } from "./send-result.js";
++import type { ChatSummary, MessageSummary } from "./conversation-store.js";
+ import type { ActiveWebSendOptions } from "./types.js";
+ 
+ function recordWhatsAppOutbound(accountId: string) {
+@@ -40,6 +41,16 @@ export function createWebSendApi(params: {
+       options?: MiscMessageGenerationOptions,
+     ) => Promise<WAMessage | undefined>;
+     sendPresenceUpdate: (presence: WAPresence, jid?: string) => Promise<unknown>;
++    groupCreate: (
++      subject: string,
++      participants: string[],
++    ) => Promise<{ id: string; subject?: string }>;
++    groupParticipantsUpdate: (
++      jid: string,
++      participants: string[],
++      action: "add",
++    ) => Promise<Array<{ status: string; jid: string | undefined }>>;
++    groupInviteCode: (jid: string) => Promise<string | undefined>;
+   };
+   defaultAccountId: string;
+   resolveOutboundMentions?: (params: {
+@@ -51,6 +62,12 @@ export function createWebSendApi(params: {
+   // proactive sends to LID-addressed contacts reach the recipient instead of
+   // ending up in a sender-only ghost chat (#67378). Defaults to PN-only.
+   authDir?: string;
++  // In-memory mirror of chats + recent messages, populated from socket events.
++  // Backs listChats / readConversation. Absent on call sites that don't wire it.
++  conversationStore?: {
++    listChats: () => ChatSummary[];
++    readConversation: (jid: string, limit?: number) => MessageSummary[];
++  };
+ }) {
+   const resolveOutboundJid = (recipient: string): string =>
+     params.authDir
+@@ -199,5 +216,44 @@ export function createWebSendApi(params: {
+       }
+       await params.sock.sendPresenceUpdate("composing", jid);
+     },
++    createGroup: async (
++      subject: string,
++      participants: string[],
++    ): Promise<{ groupJid: string; subject: string }> => {
++      const participantJids = participants.map((p) => toWhatsappJid(p));
++      const meta = await params.sock.groupCreate(subject, participantJids);
++      recordWhatsAppOutbound(params.defaultAccountId);
++      return { groupJid: meta.id, subject: meta.subject ?? subject };
++    },
++    addGroupParticipants: async (
++      groupJid: string,
++      participants: string[],
++    ): Promise<Array<{ jid: string | undefined; status: string }>> => {
++      const participantJids = participants.map((p) => toWhatsappJid(p));
++      const results = await params.sock.groupParticipantsUpdate(groupJid, participantJids, "add");
++      recordWhatsAppOutbound(params.defaultAccountId);
++      return results.map((r) => ({ jid: r.jid, status: r.status }));
++    },
++    getGroupInviteCode: async (
++      groupJid: string,
++    ): Promise<{ code: string; inviteLink: string }> => {
++      const code = await params.sock.groupInviteCode(groupJid);
++      if (!code) {
++        throw new Error(`No invite code returned for group ${groupJid}.`);
++      }
++      return { code, inviteLink: `https://chat.whatsapp.com/${code}` };
++    },
++    listChats: async (): Promise<ChatSummary[]> => {
++      if (!params.conversationStore) {
++        throw new Error("WhatsApp conversation mirror is unavailable on this listener.");
++      }
++      return params.conversationStore.listChats();
++    },
++    readConversation: async (jid: string, limit?: number): Promise<MessageSummary[]> => {
++      if (!params.conversationStore) {
++        throw new Error("WhatsApp conversation mirror is unavailable on this listener.");
++      }
++      return params.conversationStore.readConversation(jid, limit);
++    },
+   } as const;
+ }
+diff --git a/extensions/whatsapp/src/inbound/types.ts b/extensions/whatsapp/src/inbound/types.ts
+index 31c122877d..a2558c4ad1 100644
+--- a/extensions/whatsapp/src/inbound/types.ts
++++ b/extensions/whatsapp/src/inbound/types.ts
+@@ -2,6 +2,7 @@ import type { AnyMessageContent, MiscMessageGenerationOptions } from "baileys";
+ import type { NormalizedLocation } from "openclaw/plugin-sdk/channel-inbound";
+ import type { PollInput } from "openclaw/plugin-sdk/poll-runtime";
+ import type { WhatsAppIdentity, WhatsAppReplyContext, WhatsAppSelfIdentity } from "../identity.js";
++import type { ChatSummary, MessageSummary } from "./conversation-store.js";
+ import type { WhatsAppSendResult } from "./send-result.js";
+ 
+ export type WebListenerCloseReason = {
+@@ -41,6 +42,22 @@ export type ActiveWebListener = {
+     participant?: string,
+   ) => Promise<WhatsAppSendResult>;
+   sendComposingTo: (to: string) => Promise<void>;
++  /** Create a new group with the given subject and participants (E.164 numbers or JIDs). */
++  createGroup: (
++    subject: string,
++    participants: string[],
++  ) => Promise<{ groupJid: string; subject: string }>;
++  /** Add participants (E.164 numbers or JIDs) to an existing group. */
++  addGroupParticipants: (
++    groupJid: string,
++    participants: string[],
++  ) => Promise<Array<{ jid: string | undefined; status: string }>>;
++  /** Resolve the invite code + link for a group the bot administers. */
++  getGroupInviteCode: (groupJid: string) => Promise<{ code: string; inviteLink: string }>;
++  /** List conversations from the in-memory mirror (RAM-only, rebuilt on reconnect). */
++  listChats: () => Promise<ChatSummary[]>;
++  /** Read recent messages of a conversation from the in-memory mirror. */
++  readConversation: (jid: string, limit?: number) => Promise<MessageSummary[]>;
+   close?: () => Promise<void>;
+ };
+ 

@@ -2,6 +2,7 @@ import type { AnyMessageContent, MiscMessageGenerationOptions } from "baileys";
 import type { NormalizedLocation } from "openclaw/plugin-sdk/channel-inbound";
 import type { PollInput } from "openclaw/plugin-sdk/poll-runtime";
 import type { WhatsAppIdentity, WhatsAppReplyContext, WhatsAppSelfIdentity } from "../identity.js";
+import type { ChatSummary, MessageSummary } from "./conversation-store.js";
 import type { WhatsAppSendResult } from "./send-result.js";
 
 export type WebListenerCloseReason = {
@@ -53,6 +54,10 @@ export type ActiveWebListener = {
   ) => Promise<Array<{ jid: string | undefined; status: string }>>;
   /** Resolve the invite code + link for a group the bot administers. */
   getGroupInviteCode: (groupJid: string) => Promise<{ code: string; inviteLink: string }>;
+  /** List conversations from the in-memory mirror (RAM-only, rebuilt on reconnect). */
+  listChats: () => Promise<ChatSummary[]>;
+  /** Read recent messages of a conversation from the in-memory mirror. */
+  readConversation: (jid: string, limit?: number) => Promise<MessageSummary[]>;
   close?: () => Promise<void>;
 };
 

@@ -4,7 +4,8 @@ name: Publish @openclaw/whatsapp (Clawnify fork) release
 # release and publishes the installable tarball as a GitHub Release asset.
 #
 # Our delta is kept as a version-independent patch
-# (clawnify-patches/whatsapp-group-tools.patch). To produce a build compatible
+# (clawnify-patches/whatsapp-clawnify-tools.patch — group + conversation tools).
+# To produce a build compatible
 # with openclaw runtime vX, push a tag `whatsapp-vX` (or dispatch with
 # upstream_tag=vX): CI checks out upstream vX, applies the patch, builds, and
 # releases `whatsapp-vX`. The fleet installs the whatsapp-v<runtime-version>
@@ -52,7 +53,7 @@ jobs:
       - name: Stash our patch
         run: |
           mkdir -p /tmp/overlay
-          cp clawnify-patches/whatsapp-group-tools.patch /tmp/overlay/
+          cp clawnify-patches/whatsapp-clawnify-tools.patch /tmp/overlay/
 
       - name: Check out upstream release + apply our delta
         run: |
@@ -61,7 +62,7 @@ jobs:
           git remote add upstream https://github.com/openclaw/openclaw.git
           git fetch --no-tags --depth 1 upstream "refs/tags/${{ steps.target.outputs.tag }}:refs/tags/${{ steps.target.outputs.tag }}"
           git checkout -f "${{ steps.target.outputs.tag }}"
-          git apply --3way --whitespace=nowarn /tmp/overlay/whatsapp-group-tools.patch
+          git apply --3way --whitespace=nowarn /tmp/overlay/whatsapp-clawnify-tools.patch
           echo "Applied Clawnify whatsapp delta onto ${{ steps.target.outputs.tag }}"
 
       - uses: pnpm/action-setup@v4
@@ -87,12 +88,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: whatsapp-v${{ steps.pack.outputs.version }}
-          name: "@openclaw/whatsapp ${{ steps.pack.outputs.version }} (Clawnify fork + group tools)"
+          name: "@openclaw/whatsapp ${{ steps.pack.outputs.version }} (Clawnify fork + group/conversation tools)"
           body: |
             Clawnify fork of `@openclaw/whatsapp@${{ steps.pack.outputs.version }}` (built on upstream
-            `${{ steps.target.outputs.tag }}`) with opt-in WhatsApp group-management agent tools
-            (`whatsapp_group_create`, `whatsapp_group_add_participants`, `whatsapp_group_invite_link`),
-            gated behind `OPENCLAW_WHATSAPP_GROUPS=1`.
+            `${{ steps.target.outputs.tag }}`) with opt-in agent tools:
+            - Group management (`whatsapp_group_create`, `whatsapp_group_add_participants`,
+              `whatsapp_group_invite_link`), gated behind `OPENCLAW_WHATSAPP_GROUPS=1`.
+            - Conversation read (`whatsapp_list_chats`, `whatsapp_read_conversation`), gated behind
+              `OPENCLAW_WHATSAPP_CONVERSATIONS=1`. In-memory mirror, RAM only, never persisted.
 
             Install on a server running openclaw `${{ steps.pack.outputs.version }}`:
             ```
