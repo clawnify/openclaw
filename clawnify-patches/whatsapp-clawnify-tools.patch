@@ -753,7 +753,7 @@ index 00000000..bf0ff1da
 +  }
 +}
 diff --git a/extensions/whatsapp/src/inbound/monitor.ts b/extensions/whatsapp/src/inbound/monitor.ts
-index d4bbafa3..466c02aa 100644
+index d4bbafa3..f515fef4 100644
 --- a/extensions/whatsapp/src/inbound/monitor.ts
 +++ b/extensions/whatsapp/src/inbound/monitor.ts
 @@ -58,6 +58,7 @@ import {
@@ -824,6 +824,23 @@ index d4bbafa3..466c02aa 100644
          await drainInboundBeforeSocketCloseWithTimeout();
        } catch (err) {
          logWhatsAppVerbose(options.verbose, `Inbound close drain failed: ${String(err)}`);
+@@ -1316,6 +1352,16 @@ export async function attachWebInboxToSocket(
+     sendMessage: sendApi.sendMessage,
+     sendPoll: sendApi.sendPoll,
+     sendReaction: sendApi.sendReaction,
++    // Clawnify fork: upstream narrowed this object from `...sendApi` to the
++    // four fields above (v2026.6.x), which silently dropped the group +
++    // conversation helpers off the active listener. Re-expose them explicitly
++    // so the whatsapp_group_* / whatsapp_list_chats / whatsapp_read_conversation
++    // agent tools keep working.
++    createGroup: sendApi.createGroup,
++    addGroupParticipants: sendApi.addGroupParticipants,
++    getGroupInviteCode: sendApi.getGroupInviteCode,
++    listChats: sendApi.listChats,
++    readConversation: sendApi.readConversation,
+   } as const;
+ }
+ 
 diff --git a/extensions/whatsapp/src/inbound/send-api.ts b/extensions/whatsapp/src/inbound/send-api.ts
 index a7677466..7f2ddec6 100644
 --- a/extensions/whatsapp/src/inbound/send-api.ts
