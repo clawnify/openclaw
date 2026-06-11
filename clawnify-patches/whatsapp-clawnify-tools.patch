@@ -1,6 +1,6 @@
 diff --git a/extensions/whatsapp/src/agent-tools-conversations.ts b/extensions/whatsapp/src/agent-tools-conversations.ts
 new file mode 100644
-index 0000000000..2ea4d67d33
+index 00000000..2ea4d67d
 --- /dev/null
 +++ b/extensions/whatsapp/src/agent-tools-conversations.ts
 @@ -0,0 +1,141 @@
@@ -147,7 +147,7 @@ index 0000000000..2ea4d67d33
 +}
 diff --git a/extensions/whatsapp/src/agent-tools-groups.ts b/extensions/whatsapp/src/agent-tools-groups.ts
 new file mode 100644
-index 0000000000..9959062a7c
+index 00000000..9959062a
 --- /dev/null
 +++ b/extensions/whatsapp/src/agent-tools-groups.ts
 @@ -0,0 +1,167 @@
@@ -319,19 +319,19 @@ index 0000000000..9959062a7c
 +  ];
 +}
 diff --git a/extensions/whatsapp/src/channel.ts b/extensions/whatsapp/src/channel.ts
-index 93fd42d333..bb814ac206 100644
+index 38f6da3e..ee064471 100644
 --- a/extensions/whatsapp/src/channel.ts
 +++ b/extensions/whatsapp/src/channel.ts
-@@ -8,6 +8,8 @@ import {
+@@ -9,6 +9,8 @@ import {
  } from "openclaw/plugin-sdk/status-helpers";
  import { resolveWhatsAppAccount, type ResolvedWhatsAppAccount } from "./accounts.js";
  import { createWhatsAppLoginTool } from "./agent-tools-login.js";
 +import { createWhatsAppConversationTools } from "./agent-tools-conversations.js";
 +import { createWhatsAppGroupTools } from "./agent-tools-groups.js";
- import { whatsappApprovalAuth } from "./approval-auth.js";
+ import { whatsappApprovalCapability } from "./approval-native.js";
  import type { WebChannelStatus } from "./auto-reply/types.js";
  import {
-@@ -93,7 +95,11 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
+@@ -94,7 +96,11 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
            return (await channelRuntime.readWebAuthState(account.authDir)) === "linked";
          },
        }),
@@ -346,7 +346,7 @@ index 93fd42d333..bb814ac206 100644
          resolveAccount: resolveWhatsAppAccount,
 diff --git a/extensions/whatsapp/src/inbound/conversation-store.test.ts b/extensions/whatsapp/src/inbound/conversation-store.test.ts
 new file mode 100644
-index 0000000000..2f363bd600
+index 00000000..2f363bd6
 --- /dev/null
 +++ b/extensions/whatsapp/src/inbound/conversation-store.test.ts
 @@ -0,0 +1,138 @@
@@ -490,7 +490,7 @@ index 0000000000..2f363bd600
 +});
 diff --git a/extensions/whatsapp/src/inbound/conversation-store.ts b/extensions/whatsapp/src/inbound/conversation-store.ts
 new file mode 100644
-index 0000000000..bf0ff1dadd
+index 00000000..bf0ff1da
 --- /dev/null
 +++ b/extensions/whatsapp/src/inbound/conversation-store.ts
 @@ -0,0 +1,258 @@
@@ -753,10 +753,10 @@ index 0000000000..bf0ff1dadd
 +  }
 +}
 diff --git a/extensions/whatsapp/src/inbound/monitor.ts b/extensions/whatsapp/src/inbound/monitor.ts
-index 9ae2c2ab9d..df1c027342 100644
+index d4bbafa3..466c02aa 100644
 --- a/extensions/whatsapp/src/inbound/monitor.ts
 +++ b/extensions/whatsapp/src/inbound/monitor.ts
-@@ -39,6 +39,7 @@ import {
+@@ -58,6 +58,7 @@ import {
    hasInboundUserContent,
  } from "./extract.js";
  import { attachEmitterListener, closeInboundMonitorSocket } from "./lifecycle.js";
@@ -764,9 +764,9 @@ index 9ae2c2ab9d..df1c027342 100644
  import { downloadInboundMedia, downloadQuotedInboundMedia } from "./media.js";
  import {
    addWhatsAppOutboundMentionsToContent,
-@@ -958,6 +959,18 @@ export async function attachWebInboxToSocket(
-     handleConnectionUpdate as unknown as (...args: unknown[]) => void,
-   );
+@@ -1246,6 +1247,18 @@ export async function attachWebInboxToSocket(
+     pendingMessageHandlers.delete(replayTask);
+   });
  
 +  // In-memory mirror of chats + recent messages (RAM only, never persisted).
 +  // Powers the whatsapp_list_chats / whatsapp_read_conversation agent tools;
@@ -783,9 +783,9 @@ index 9ae2c2ab9d..df1c027342 100644
    void (async () => {
      try {
        const groups = await sock.groupFetchAllParticipating();
-@@ -999,10 +1012,32 @@ export async function attachWebInboxToSocket(
+@@ -1287,10 +1300,32 @@ export async function attachWebInboxToSocket(
          }
-         return currentSock.sendPresenceUpdate(presence, jid);
+         return currentSock.sendPresenceUpdate(presenceLocal, jid);
        },
 +      groupCreate: (subject: string, participants: string[]) => {
 +        const currentSock = getCurrentSock();
@@ -816,7 +816,7 @@ index 9ae2c2ab9d..df1c027342 100644
    });
  
    return {
-@@ -1010,6 +1045,7 @@ export async function attachWebInboxToSocket(
+@@ -1298,6 +1333,7 @@ export async function attachWebInboxToSocket(
        try {
          detachMessagesUpsert();
          detachConnectionUpdate();
@@ -825,18 +825,18 @@ index 9ae2c2ab9d..df1c027342 100644
        } catch (err) {
          logWhatsAppVerbose(options.verbose, `Inbound close drain failed: ${String(err)}`);
 diff --git a/extensions/whatsapp/src/inbound/send-api.ts b/extensions/whatsapp/src/inbound/send-api.ts
-index a204b2d023..3177ebba1f 100644
+index a7677466..7f2ddec6 100644
 --- a/extensions/whatsapp/src/inbound/send-api.ts
 +++ b/extensions/whatsapp/src/inbound/send-api.ts
-@@ -18,6 +18,7 @@ import {
-   normalizeWhatsAppSendResult,
+@@ -21,6 +21,7 @@ import {
+   type WhatsAppSendKind,
    type WhatsAppSendResult,
  } from "./send-result.js";
 +import type { ChatSummary, MessageSummary } from "./conversation-store.js";
  import type { ActiveWebSendOptions } from "./types.js";
  
- function recordWhatsAppOutbound(accountId: string) {
-@@ -40,6 +41,16 @@ export function createWebSendApi(params: {
+ type StructuredContactSend = {
+@@ -59,6 +60,16 @@ export function createWebSendApi(params: {
        options?: MiscMessageGenerationOptions,
      ) => Promise<WAMessage | undefined>;
      sendPresenceUpdate: (presence: WAPresence, jid?: string) => Promise<unknown>;
@@ -853,7 +853,7 @@ index a204b2d023..3177ebba1f 100644
    };
    defaultAccountId: string;
    resolveOutboundMentions?: (params: {
-@@ -51,6 +62,12 @@ export function createWebSendApi(params: {
+@@ -70,6 +81,12 @@ export function createWebSendApi(params: {
    // proactive sends to LID-addressed contacts reach the recipient instead of
    // ending up in a sender-only ghost chat (#67378). Defaults to PN-only.
    authDir?: string;
@@ -866,7 +866,7 @@ index a204b2d023..3177ebba1f 100644
  }) {
    const resolveOutboundJid = (recipient: string): string =>
      params.authDir
-@@ -199,5 +216,44 @@ export function createWebSendApi(params: {
+@@ -280,5 +297,44 @@ export function createWebSendApi(params: {
        }
        await params.sock.sendPresenceUpdate("composing", jid);
      },
@@ -912,10 +912,10 @@ index a204b2d023..3177ebba1f 100644
    } as const;
  }
 diff --git a/extensions/whatsapp/src/inbound/types.ts b/extensions/whatsapp/src/inbound/types.ts
-index 31c122877d..a2558c4ad1 100644
+index a657ea16..8d424f41 100644
 --- a/extensions/whatsapp/src/inbound/types.ts
 +++ b/extensions/whatsapp/src/inbound/types.ts
-@@ -2,6 +2,7 @@ import type { AnyMessageContent, MiscMessageGenerationOptions } from "baileys";
+@@ -3,6 +3,7 @@ import type { AnyMessageContent, MiscMessageGenerationOptions } from "baileys";
  import type { NormalizedLocation } from "openclaw/plugin-sdk/channel-inbound";
  import type { PollInput } from "openclaw/plugin-sdk/poll-runtime";
  import type { WhatsAppIdentity, WhatsAppReplyContext, WhatsAppSelfIdentity } from "../identity.js";
@@ -923,7 +923,7 @@ index 31c122877d..a2558c4ad1 100644
  import type { WhatsAppSendResult } from "./send-result.js";
  
  export type WebListenerCloseReason = {
-@@ -41,6 +42,22 @@ export type ActiveWebListener = {
+@@ -42,6 +43,22 @@ export type ActiveWebListener = {
      participant?: string,
    ) => Promise<WhatsAppSendResult>;
    sendComposingTo: (to: string) => Promise<void>;
