@@ -1,6 +1,6 @@
 diff --git a/extensions/whatsapp/src/agent-tools-conversations.ts b/extensions/whatsapp/src/agent-tools-conversations.ts
 new file mode 100644
-index 0000000000..2ea4d67d33
+index 0000000000..f5740efea2
 --- /dev/null
 +++ b/extensions/whatsapp/src/agent-tools-conversations.ts
 @@ -0,0 +1,141 @@
@@ -11,7 +11,7 @@ index 0000000000..2ea4d67d33
 +import type { ChatSummary, MessageSummary } from "./inbound/conversation-store.js";
 +import type { ActiveWebListener } from "./inbound/types.js";
 +
-+// Interim build gate, mirroring the group tools: conversation reading is opt-in
++// Build gate, mirroring the group tools: conversation reading is opt-in
 +// via OPENCLAW_WHATSAPP_CONVERSATIONS rather than a channels.whatsapp.actions
 +// config flag (stock core's strict zod schema would reject a new key there).
 +// Reading a user's full chat list + message history is more sensitive than the
@@ -147,7 +147,7 @@ index 0000000000..2ea4d67d33
 +}
 diff --git a/extensions/whatsapp/src/agent-tools-groups.ts b/extensions/whatsapp/src/agent-tools-groups.ts
 new file mode 100644
-index 0000000000..9959062a7c
+index 0000000000..b01c45183b
 --- /dev/null
 +++ b/extensions/whatsapp/src/agent-tools-groups.ts
 @@ -0,0 +1,167 @@
@@ -159,13 +159,13 @@ index 0000000000..9959062a7c
 +
 +const GROUP_JID_PATTERN = "@g.us";
 +
-+// Interim build gate: the group tools are opt-in via the
-+// OPENCLAW_WHATSAPP_GROUPS env var rather than a channels.whatsapp.actions
-+// config flag. Stock OpenClaw core (which we run unmodified) validates
-+// channels.whatsapp.actions with a strict zod schema, so introducing a new
-+// `groups` key there would be rejected at gateway start. The env gate keeps
-+// this plugin installable on stock core. (The upstream PR uses the proper
-+// config gate; this divergence disappears when that lands.)
++// Build gate: the group tools are opt-in via the OPENCLAW_WHATSAPP_GROUPS env
++// var rather than a channels.whatsapp.actions config flag. We track upstream
++// OpenClaw unmodified and apply this delta as a patch onto each release; stock
++// core validates channels.whatsapp.actions with a strict zod schema, so a new
++// `groups` key there would be rejected at gateway start. The env gate keeps the
++// patch applying cleanly across upstream bumps. Clawnify owns this WhatsApp
++// plugin fork, so this gate is the permanent mechanism (not an interim step).
 +function areWhatsAppGroupActionsEnabled(): boolean {
 +  const raw = process.env.OPENCLAW_WHATSAPP_GROUPS;
 +  return raw === "1" || raw === "true";
@@ -318,20 +318,284 @@ index 0000000000..9959062a7c
 +    createWhatsAppGroupInviteLinkTool(),
 +  ];
 +}
+diff --git a/extensions/whatsapp/src/agent-tools-profile.ts b/extensions/whatsapp/src/agent-tools-profile.ts
+new file mode 100644
+index 0000000000..1a636325f5
+--- /dev/null
++++ b/extensions/whatsapp/src/agent-tools-profile.ts
+@@ -0,0 +1,257 @@
++import { readFile } from "node:fs/promises";
++import type { ChannelAgentTool } from "openclaw/plugin-sdk/channel-contract";
++import {
++  resolveAgentAvatar,
++  resolveAgentIdentity,
++  resolveDefaultAgentId,
++} from "openclaw/plugin-sdk/agent-runtime";
++import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
++import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
++import { Type } from "typebox";
++import { getActiveWebListener, resolveWebAccountId } from "./active-listener.js";
++import type { ActiveWebListener } from "./inbound/types.js";
++
++// Build gate, mirroring the group + conversation tools: WhatsApp profile access
++// is opt-in via OPENCLAW_WHATSAPP_PROFILE rather than a channels.whatsapp.actions
++// config flag (stock core's strict zod schema would reject a new key there). It
++// gets its OWN gate because the setters WRITE to WhatsApp's servers and, if the
++// linked number is the customer's personal or company WhatsApp, would overwrite
++// THEIR profile — so enabling groups or conversation reading must not silently
++// grant profile writes. Clawnify owns this WhatsApp plugin fork, so this gate is
++// the permanent mechanism (not an interim step).
++function areWhatsAppProfileToolsEnabled(): boolean {
++  const raw = process.env.OPENCLAW_WHATSAPP_PROFILE;
++  return raw === "1" || raw === "true";
++}
++
++function requireProfileCapableListener(accountIdArg: unknown): {
++  listener: ActiveWebListener;
++  cfg: OpenClawConfig;
++} {
++  if (!areWhatsAppProfileToolsEnabled()) {
++    throw new Error(
++      "WhatsApp profile tools are disabled. Set OPENCLAW_WHATSAPP_PROFILE=1 to enable them.",
++    );
++  }
++  const cfg = getRuntimeConfig();
++  const accountId = resolveWebAccountId({
++    cfg,
++    accountId: typeof accountIdArg === "string" ? accountIdArg : null,
++  });
++  const listener = getActiveWebListener(accountId);
++  if (!listener) {
++    throw new Error(`WhatsApp is not linked (account: ${accountId}). Link it first, then retry.`);
++  }
++  return { listener, cfg };
++}
++
++function dataUriToBuffer(uri: string): Buffer {
++  const comma = uri.indexOf(",");
++  if (comma < 0) {
++    throw new Error("Malformed data: URI for picture.");
++  }
++  const isBase64 = /;base64/i.test(uri.slice(0, comma));
++  return Buffer.from(uri.slice(comma + 1), isBase64 ? "base64" : "utf-8");
++}
++
++// Resolve the explicit `picture` argument to a Baileys media payload. Only
++// http(s) URLs and data: URIs are accepted from tool input — arbitrary local
++// paths are rejected to avoid path traversal. To use a local workspace image,
++// set it as the agent's identity avatar (security-checked by the host) and call
++// the tool with no `picture`.
++function resolveExplicitPicture(raw: string): Buffer | { url: string } {
++  const value = raw.trim();
++  if (/^https?:\/\//i.test(value)) {
++    return { url: value };
++  }
++  if (/^data:/i.test(value)) {
++    return dataUriToBuffer(value);
++  }
++  throw new Error(
++    "picture must be an http(s) URL or a data: URI. To use a local image, set it as this agent's identity avatar and call the tool without `picture`.",
++  );
++}
++
++// Fall back to the agent's configured identity avatar (config → workspace
++// IDENTITY.md), resolved + validated by the host (workspace-scoped, size +
++// extension limits). Returns a Buffer (local/data) or a remote URL.
++async function resolveIdentityPicture(
++  cfg: OpenClawConfig,
++  agentId: string,
++): Promise<Buffer | { url: string }> {
++  const avatar = resolveAgentAvatar(cfg, agentId);
++  switch (avatar.kind) {
++    case "local":
++      return readFile(avatar.filePath);
++    case "remote":
++      return { url: avatar.url };
++    case "data":
++      return dataUriToBuffer(avatar.url);
++    default:
++      throw new Error(
++        "No picture provided and this agent has no usable identity avatar configured. " +
++          "Pass `picture` (http(s) URL or data: URI), or set the agent's identity avatar.",
++      );
++  }
++}
++
++// WhatsApp itself is the source of truth for the linked account's profile. This
++// tool lets the agent SEE what's already set (e.g. a company WhatsApp that's
++// already branded) so it can decide NOT to overwrite it.
++function createWhatsAppGetProfileTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Get Profile",
++    name: "whatsapp_get_profile",
++    description:
++      "Read the linked WhatsApp account's current profile: its display name and whether a " +
++      "profile picture is set. Use this before changing anything — if the number already has a " +
++      "name/picture (e.g. a company WhatsApp), leave it as-is rather than overwriting it.",
++    parameters: Type.Object({
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { accountId } = args as { accountId?: string };
++      const { listener } = requireProfileCapableListener(accountId);
++      const name = listener.getProfileName();
++      const pictureUrl = await listener.getProfilePictureUrl();
++      const hasPicture = Boolean(pictureUrl);
++      const text = `WhatsApp profile — name: ${name ? `"${name}"` : "(unset)"}, picture: ${
++        hasPicture ? "set" : "none"
++      }.`;
++      return {
++        content: [{ type: "text", text }],
++        details: { name: name ?? null, hasPicture, pictureUrl: pictureUrl ?? null },
++      };
++    },
++  };
++}
++
++function createWhatsAppSetProfileNameTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Set Profile Name",
++    name: "whatsapp_set_profile_name",
++    description:
++      "Set the WhatsApp display name of the linked account. Omit `name` to use this agent's " +
++      "configured identity name. Refuses to overwrite a name that is already set unless " +
++      "`force` is true. WARNING: this changes the name on the linked WhatsApp account itself — " +
++      "if a personal or company number is linked, it overwrites that account's real name.",
++    parameters: Type.Object({
++      name: Type.Optional(
++        Type.String({ description: "New display name. Omit to use the agent's identity name." }),
++      ),
++      force: Type.Optional(
++        Type.Boolean({ description: "Replace an existing name. Default false (won't overwrite)." }),
++      ),
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { name, force, accountId } = args as {
++        name?: string;
++        force?: boolean;
++        accountId?: string;
++      };
++      const { listener, cfg } = requireProfileCapableListener(accountId);
++      const resolved =
++        typeof name === "string" && name.trim()
++          ? name.trim()
++          : resolveAgentIdentity(cfg, resolveDefaultAgentId(cfg))?.name?.trim();
++      if (!resolved) {
++        throw new Error(
++          "No name provided and this agent has no identity name configured. Pass `name`.",
++        );
++      }
++      const current = listener.getProfileName();
++      if (current && current.trim() && current.trim() !== resolved && force !== true) {
++        return {
++          content: [
++            {
++              type: "text",
++              text: `WhatsApp name is already set to "${current}". Pass force:true to replace it with "${resolved}".`,
++            },
++          ],
++          details: { changed: false, current, requested: resolved },
++        };
++      }
++      await listener.setProfileName(resolved);
++      return {
++        content: [{ type: "text", text: `WhatsApp display name set to "${resolved}".` }],
++        details: { changed: true, name: resolved },
++      };
++    },
++  };
++}
++
++function createWhatsAppSetProfilePictureTool(): ChannelAgentTool {
++  return {
++    label: "WhatsApp Set Profile Picture",
++    name: "whatsapp_set_profile_picture",
++    description:
++      "Set the WhatsApp profile picture of the linked account from an http(s) URL or data: URI. " +
++      "Omit `picture` to use this agent's configured identity avatar. WhatsApp crops it to a " +
++      "square automatically. Refuses to overwrite an existing picture unless `force` is true. " +
++      "WARNING: this changes the photo on the linked WhatsApp account itself — if a personal or " +
++      "company number is linked, it overwrites that account's real photo.",
++    parameters: Type.Object({
++      picture: Type.Optional(
++        Type.String({
++          description:
++            "Image as an http(s) URL or data: URI. Omit to use the agent's identity avatar.",
++        }),
++      ),
++      force: Type.Optional(
++        Type.Boolean({
++          description: "Replace an existing picture. Default false (won't overwrite).",
++        }),
++      ),
++      accountId: Type.Optional(Type.String()),
++    }),
++    execute: async (_toolCallId, args) => {
++      const { picture, force, accountId } = args as {
++        picture?: string;
++        force?: boolean;
++        accountId?: string;
++      };
++      const { listener, cfg } = requireProfileCapableListener(accountId);
++      if (force !== true && (await listener.getProfilePictureUrl())) {
++        return {
++          content: [
++            {
++              type: "text",
++              text: "WhatsApp already has a profile picture set. Pass force:true to replace it.",
++            },
++          ],
++          details: { changed: false },
++        };
++      }
++      const content =
++        typeof picture === "string" && picture.trim()
++          ? resolveExplicitPicture(picture)
++          : await resolveIdentityPicture(cfg, resolveDefaultAgentId(cfg));
++      await listener.setProfilePicture(content);
++      const source = Buffer.isBuffer(content) ? "image data" : content.url;
++      return {
++        content: [{ type: "text", text: `WhatsApp profile picture updated (from ${source}).` }],
++        details: { changed: true, source },
++      };
++    },
++  };
++}
++
++/**
++ * WhatsApp profile tools, opt-in via OPENCLAW_WHATSAPP_PROFILE. Returned only
++ * when enabled, so disabled installs don't advertise tools the agent can't use.
++ * Each tool re-checks the gate + requires an active listener. The setters are
++ * non-destructive by default (refuse to overwrite an existing name/picture
++ * unless force:true) because WhatsApp is the source of truth for the account's
++ * branding.
++ */
++export function createWhatsAppProfileTools(): ChannelAgentTool[] {
++  if (!areWhatsAppProfileToolsEnabled()) {
++    return [];
++  }
++  return [
++    createWhatsAppGetProfileTool(),
++    createWhatsAppSetProfileNameTool(),
++    createWhatsAppSetProfilePictureTool(),
++  ];
++}
 diff --git a/extensions/whatsapp/src/channel.ts b/extensions/whatsapp/src/channel.ts
-index 93fd42d333..bb814ac206 100644
+index 38f6da3e5d..8f4f37a57a 100644
 --- a/extensions/whatsapp/src/channel.ts
 +++ b/extensions/whatsapp/src/channel.ts
-@@ -8,6 +8,8 @@ import {
+@@ -9,6 +9,9 @@ import {
  } from "openclaw/plugin-sdk/status-helpers";
  import { resolveWhatsAppAccount, type ResolvedWhatsAppAccount } from "./accounts.js";
  import { createWhatsAppLoginTool } from "./agent-tools-login.js";
 +import { createWhatsAppConversationTools } from "./agent-tools-conversations.js";
 +import { createWhatsAppGroupTools } from "./agent-tools-groups.js";
- import { whatsappApprovalAuth } from "./approval-auth.js";
++import { createWhatsAppProfileTools } from "./agent-tools-profile.js";
+ import { whatsappApprovalCapability } from "./approval-native.js";
  import type { WebChannelStatus } from "./auto-reply/types.js";
  import {
-@@ -93,7 +95,11 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
+@@ -94,7 +97,12 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
            return (await channelRuntime.readWebAuthState(account.authDir)) === "linked";
          },
        }),
@@ -340,6 +604,7 @@ index 93fd42d333..bb814ac206 100644
 +        createWhatsAppLoginTool(),
 +        ...createWhatsAppGroupTools(),
 +        ...createWhatsAppConversationTools(),
++        ...createWhatsAppProfileTools(),
 +      ],
        allowlist: buildDmGroupAccountAllowlistAdapter({
          channelId: "whatsapp",
@@ -753,10 +1018,10 @@ index 0000000000..bf0ff1dadd
 +  }
 +}
 diff --git a/extensions/whatsapp/src/inbound/monitor.ts b/extensions/whatsapp/src/inbound/monitor.ts
-index 9ae2c2ab9d..df1c027342 100644
+index d4bbafa399..42c050dfab 100644
 --- a/extensions/whatsapp/src/inbound/monitor.ts
 +++ b/extensions/whatsapp/src/inbound/monitor.ts
-@@ -39,6 +39,7 @@ import {
+@@ -58,6 +58,7 @@ import {
    hasInboundUserContent,
  } from "./extract.js";
  import { attachEmitterListener, closeInboundMonitorSocket } from "./lifecycle.js";
@@ -764,9 +1029,9 @@ index 9ae2c2ab9d..df1c027342 100644
  import { downloadInboundMedia, downloadQuotedInboundMedia } from "./media.js";
  import {
    addWhatsAppOutboundMentionsToContent,
-@@ -958,6 +959,18 @@ export async function attachWebInboxToSocket(
-     handleConnectionUpdate as unknown as (...args: unknown[]) => void,
-   );
+@@ -1246,6 +1247,18 @@ export async function attachWebInboxToSocket(
+     pendingMessageHandlers.delete(replayTask);
+   });
  
 +  // In-memory mirror of chats + recent messages (RAM only, never persisted).
 +  // Powers the whatsapp_list_chats / whatsapp_read_conversation agent tools;
@@ -783,9 +1048,9 @@ index 9ae2c2ab9d..df1c027342 100644
    void (async () => {
      try {
        const groups = await sock.groupFetchAllParticipating();
-@@ -999,10 +1012,32 @@ export async function attachWebInboxToSocket(
+@@ -1287,10 +1300,69 @@ export async function attachWebInboxToSocket(
          }
-         return currentSock.sendPresenceUpdate(presence, jid);
+         return currentSock.sendPresenceUpdate(presenceLocal, jid);
        },
 +      groupCreate: (subject: string, participants: string[]) => {
 +        const currentSock = getCurrentSock();
@@ -808,6 +1073,43 @@ index 9ae2c2ab9d..df1c027342 100644
 +        }
 +        return currentSock.groupInviteCode(jid);
 +      },
++      fetchOwnName: () => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        return currentSock.user?.name ?? null;
++      },
++      fetchOwnProfilePictureUrl: async () => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        const selfJid = currentSock.user?.id;
++        if (!selfJid) {
++          return null;
++        }
++        // No picture set → Baileys throws item-not-found; treat as "none".
++        return currentSock.profilePictureUrl(selfJid, "image").catch(() => null);
++      },
++      updateProfileName: (name: string) => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        return currentSock.updateProfileName(name);
++      },
++      updateProfilePicture: (content: Buffer | { url: string }) => {
++        const currentSock = getCurrentSock();
++        if (!currentSock) {
++          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
++        }
++        const selfJid = currentSock.user?.id;
++        if (!selfJid) {
++          throw new Error("WhatsApp self identity is unavailable; retry once connected.");
++        }
++        return currentSock.updateProfilePicture(selfJid, content);
++      },
      },
      defaultAccountId: options.accountId,
      resolveOutboundMentions: ({ jid, text }) => resolveOutboundMentionsForGroup(jid, text),
@@ -816,7 +1118,7 @@ index 9ae2c2ab9d..df1c027342 100644
    });
  
    return {
-@@ -1010,6 +1045,7 @@ export async function attachWebInboxToSocket(
+@@ -1298,6 +1370,7 @@ export async function attachWebInboxToSocket(
        try {
          detachMessagesUpsert();
          detachConnectionUpdate();
@@ -824,19 +1126,39 @@ index 9ae2c2ab9d..df1c027342 100644
          await drainInboundBeforeSocketCloseWithTimeout();
        } catch (err) {
          logWhatsAppVerbose(options.verbose, `Inbound close drain failed: ${String(err)}`);
+@@ -1316,6 +1389,19 @@ export async function attachWebInboxToSocket(
+     sendMessage: sendApi.sendMessage,
+     sendPoll: sendApi.sendPoll,
+     sendReaction: sendApi.sendReaction,
++    // Clawnify fork tools: upstream's listener return lists explicit fields (not
++    // ...sendApi), so each tool method must be re-exposed here or it silently
++    // drops at runtime (agent tools fail with "X is not a function"). See
++    // docs/internal/fleet-update.md "WhatsApp Plugin" canary note.
++    createGroup: sendApi.createGroup,
++    addGroupParticipants: sendApi.addGroupParticipants,
++    getGroupInviteCode: sendApi.getGroupInviteCode,
++    listChats: sendApi.listChats,
++    readConversation: sendApi.readConversation,
++    getProfileName: sendApi.getProfileName,
++    getProfilePictureUrl: sendApi.getProfilePictureUrl,
++    setProfileName: sendApi.setProfileName,
++    setProfilePicture: sendApi.setProfilePicture,
+   } as const;
+ }
+ 
 diff --git a/extensions/whatsapp/src/inbound/send-api.ts b/extensions/whatsapp/src/inbound/send-api.ts
-index a204b2d023..3177ebba1f 100644
+index a7677466e2..5eed1a21dd 100644
 --- a/extensions/whatsapp/src/inbound/send-api.ts
 +++ b/extensions/whatsapp/src/inbound/send-api.ts
-@@ -18,6 +18,7 @@ import {
-   normalizeWhatsAppSendResult,
+@@ -21,6 +21,7 @@ import {
+   type WhatsAppSendKind,
    type WhatsAppSendResult,
  } from "./send-result.js";
 +import type { ChatSummary, MessageSummary } from "./conversation-store.js";
  import type { ActiveWebSendOptions } from "./types.js";
  
- function recordWhatsAppOutbound(accountId: string) {
-@@ -40,6 +41,16 @@ export function createWebSendApi(params: {
+ type StructuredContactSend = {
+@@ -59,6 +60,20 @@ export function createWebSendApi(params: {
        options?: MiscMessageGenerationOptions,
      ) => Promise<WAMessage | undefined>;
      sendPresenceUpdate: (presence: WAPresence, jid?: string) => Promise<unknown>;
@@ -850,10 +1172,14 @@ index a204b2d023..3177ebba1f 100644
 +      action: "add",
 +    ) => Promise<Array<{ status: string; jid: string | undefined }>>;
 +    groupInviteCode: (jid: string) => Promise<string | undefined>;
++    fetchOwnName: () => string | null;
++    fetchOwnProfilePictureUrl: () => Promise<string | null>;
++    updateProfileName: (name: string) => Promise<void>;
++    updateProfilePicture: (content: Buffer | { url: string }) => Promise<void>;
    };
    defaultAccountId: string;
    resolveOutboundMentions?: (params: {
-@@ -51,6 +62,12 @@ export function createWebSendApi(params: {
+@@ -70,6 +85,12 @@ export function createWebSendApi(params: {
    // proactive sends to LID-addressed contacts reach the recipient instead of
    // ending up in a sender-only ghost chat (#67378). Defaults to PN-only.
    authDir?: string;
@@ -866,7 +1192,7 @@ index a204b2d023..3177ebba1f 100644
  }) {
    const resolveOutboundJid = (recipient: string): string =>
      params.authDir
-@@ -199,5 +216,44 @@ export function createWebSendApi(params: {
+@@ -280,5 +301,56 @@ export function createWebSendApi(params: {
        }
        await params.sock.sendPresenceUpdate("composing", jid);
      },
@@ -909,13 +1235,25 @@ index a204b2d023..3177ebba1f 100644
 +      }
 +      return params.conversationStore.readConversation(jid, limit);
 +    },
++    getProfileName: (): string | null => params.sock.fetchOwnName(),
++    getProfilePictureUrl: (): Promise<string | null> => params.sock.fetchOwnProfilePictureUrl(),
++    setProfileName: async (name: string): Promise<void> => {
++      const trimmed = name.trim();
++      if (!trimmed) {
++        throw new Error("name is required.");
++      }
++      await params.sock.updateProfileName(trimmed);
++    },
++    setProfilePicture: async (content: Buffer | { url: string }): Promise<void> => {
++      await params.sock.updateProfilePicture(content);
++    },
    } as const;
  }
 diff --git a/extensions/whatsapp/src/inbound/types.ts b/extensions/whatsapp/src/inbound/types.ts
-index 31c122877d..a2558c4ad1 100644
+index a657ea1665..bd54152450 100644
 --- a/extensions/whatsapp/src/inbound/types.ts
 +++ b/extensions/whatsapp/src/inbound/types.ts
-@@ -2,6 +2,7 @@ import type { AnyMessageContent, MiscMessageGenerationOptions } from "baileys";
+@@ -3,6 +3,7 @@ import type { AnyMessageContent, MiscMessageGenerationOptions } from "baileys";
  import type { NormalizedLocation } from "openclaw/plugin-sdk/channel-inbound";
  import type { PollInput } from "openclaw/plugin-sdk/poll-runtime";
  import type { WhatsAppIdentity, WhatsAppReplyContext, WhatsAppSelfIdentity } from "../identity.js";
@@ -923,7 +1261,7 @@ index 31c122877d..a2558c4ad1 100644
  import type { WhatsAppSendResult } from "./send-result.js";
  
  export type WebListenerCloseReason = {
-@@ -41,6 +42,22 @@ export type ActiveWebListener = {
+@@ -42,6 +43,30 @@ export type ActiveWebListener = {
      participant?: string,
    ) => Promise<WhatsAppSendResult>;
    sendComposingTo: (to: string) => Promise<void>;
@@ -943,6 +1281,14 @@ index 31c122877d..a2558c4ad1 100644
 +  listChats: () => Promise<ChatSummary[]>;
 +  /** Read recent messages of a conversation from the in-memory mirror. */
 +  readConversation: (jid: string, limit?: number) => Promise<MessageSummary[]>;
++  /** This account's own WhatsApp display (push) name, or null if unset/unknown. */
++  getProfileName: () => string | null;
++  /** URL of this account's own profile picture, or null if none is set. */
++  getProfilePictureUrl: () => Promise<string | null>;
++  /** Set this account's own WhatsApp display (push) name. */
++  setProfileName: (name: string) => Promise<void>;
++  /** Set this account's own WhatsApp profile picture (Baileys squares/resizes it). */
++  setProfilePicture: (content: Buffer | { url: string }) => Promise<void>;
    close?: () => Promise<void>;
  };
  
