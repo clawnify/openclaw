@@ -609,15 +609,131 @@ index 38f6da3e5d..8f4f37a57a 100644
        allowlist: buildDmGroupAccountAllowlistAdapter({
          channelId: "whatsapp",
          resolveAccount: resolveWhatsAppAccount,
+diff --git a/extensions/whatsapp/src/full-history.ts b/extensions/whatsapp/src/full-history.ts
+new file mode 100644
+index 0000000000..1e6b73bea1
+--- /dev/null
++++ b/extensions/whatsapp/src/full-history.ts
+@@ -0,0 +1,9 @@
++// Opt-in full history sync gate, mirroring the group/conversation build gates
++// (OPENCLAW_WHATSAPP_GROUPS / _CONVERSATIONS). Shared by the socket setup
++// (session.ts — request full history + advertise a Desktop identity) and the
++// inbound monitor (persist the conversation mirror so the one-time backlog
++// survives restarts). See session.ts for the WhatsApp/baileys mechanics.
++export function isFullHistorySyncEnabled(): boolean {
++  const raw = process.env.OPENCLAW_WHATSAPP_FULL_HISTORY;
++  return raw === "1" || raw === "true";
++}
+diff --git a/extensions/whatsapp/src/inbound/conversation-persistence.ts b/extensions/whatsapp/src/inbound/conversation-persistence.ts
+new file mode 100644
+index 0000000000..acb9e7e333
+--- /dev/null
++++ b/extensions/whatsapp/src/inbound/conversation-persistence.ts
+@@ -0,0 +1,90 @@
++import { createHash } from "node:crypto";
++import type {
++  OpenKeyedStoreOptions,
++  PluginStateKeyedStore,
++} from "openclaw/plugin-sdk/plugin-state-runtime";
++import type {
++  ChatSummary,
++  ConversationPersistence,
++  MessageSummary,
++} from "./conversation-store.js";
++
++// One SQLite row per chat (keyed by JID). Sharding per chat keeps each value
++// well under the keyed-store 64KB-per-value limit and lets a single new message
++// rewrite only its own chat rather than the whole mirror.
++type PersistedChat = { chat: ChatSummary; messages: MessageSummary[] };
++
++// Cap live rows to the store's chat bound (see MAX_CHATS in conversation-store);
++// the keyed store evicts its own oldest rows past this.
++const CONVERSATION_STORE_MAX_ENTRIES = 500;
++
++// openKeyedStore rejects JSON values >= 64KB. Stay under it with margin and, for
++// a pathologically large chat, drop the oldest messages until the value fits so
++// a save can never throw and stall the flush loop.
++const MAX_VALUE_BYTES = 56 * 1024;
++
++/** Stable, filesystem/DB-safe namespace scoped to one linked account. */
++export function conversationStoreNamespace(accountId: string): string {
++  const part = createHash("sha256").update(accountId).digest("hex").slice(0, 24);
++  return `whatsapp.conversations.${part}`;
++}
++
++function fitValue(chat: ChatSummary, messages: MessageSummary[]): PersistedChat {
++  let msgs = messages;
++  let value: PersistedChat = { chat, messages: msgs };
++  while (msgs.length > 1 && Buffer.byteLength(JSON.stringify(value)) > MAX_VALUE_BYTES) {
++    // Drop the oldest quarter and re-measure; readConversation reads the tail,
++    // so the most recent messages are the ones worth persisting.
++    msgs = msgs.slice(Math.ceil(msgs.length / 4));
++    value = { chat, messages: msgs };
++  }
++  return value;
++}
++
++function toPersistence(store: PluginStateKeyedStore<PersistedChat>): ConversationPersistence {
++  return {
++    async loadAll() {
++      const entries = await store.entries();
++      return entries.map((entry) => ({
++        jid: entry.key,
++        chat: entry.value.chat,
++        messages: Array.isArray(entry.value.messages) ? entry.value.messages : [],
++      }));
++    },
++    async save(jid, chat, messages) {
++      await store.register(jid, fitValue(chat, messages));
++    },
++    async remove(jid) {
++      await store.delete(jid);
++    },
++  };
++}
++
++/**
++ * Build a durable persistence adapter for the conversation mirror from the
++ * plugin runtime's keyed store. Returns undefined when the runtime doesn't
++ * expose a keyed store (e.g. an untrusted install or a test harness), so the
++ * caller silently falls back to the RAM-only mirror.
++ */
++export function openConversationPersistence(
++  openKeyedStore:
++    | (<T>(options: OpenKeyedStoreOptions) => PluginStateKeyedStore<T>)
++    | undefined,
++  accountId: string,
++): ConversationPersistence | undefined {
++  if (!openKeyedStore) {
++    return undefined;
++  }
++  try {
++    const store = openKeyedStore<PersistedChat>({
++      namespace: conversationStoreNamespace(accountId),
++      maxEntries: CONVERSATION_STORE_MAX_ENTRIES,
++    });
++    return toPersistence(store);
++  } catch {
++    // The keyed store rejects untrusted installs ("openKeyedStore is only
++    // available for trusted plugins"). Never let that take the mirror — and the
++    // whole inbound monitor — down; degrade to the RAM-only mirror instead.
++    return undefined;
++  }
++}
 diff --git a/extensions/whatsapp/src/inbound/conversation-store.test.ts b/extensions/whatsapp/src/inbound/conversation-store.test.ts
 new file mode 100644
-index 0000000000..2f363bd600
+index 0000000000..8951bba5b5
 --- /dev/null
 +++ b/extensions/whatsapp/src/inbound/conversation-store.test.ts
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,246 @@
 +import type { Chat, WAMessage } from "baileys";
 +import { describe, expect, it } from "vitest";
-+import { ConversationStore } from "./conversation-store.js";
++import {
++  ConversationStore,
++  type ChatSummary,
++  type ConversationPersistence,
++  type MessageSummary,
++} from "./conversation-store.js";
 +
 +function chat(id: string, overrides: Partial<Chat> = {}): Chat {
 +  return { id, conversationTimestamp: 1000, ...overrides } as Chat;
@@ -753,12 +869,115 @@ index 0000000000..2f363bd600
 +    expect(listeners.size).toBe(0);
 +  });
 +});
++
++function fakePersistence() {
++  const rows = new Map<string, { chat: ChatSummary; messages: MessageSummary[] }>();
++  const adapter: ConversationPersistence = {
++    async loadAll() {
++      return [...rows.entries()].map(([jid, value]) => ({
++        jid,
++        chat: value.chat,
++        messages: value.messages,
++      }));
++    },
++    async save(jid, chat, messages) {
++      rows.set(jid, { chat, messages });
++    },
++    async remove(jid) {
++      rows.delete(jid);
++    },
++  };
++  return { rows, adapter };
++}
++
++describe("ConversationStore persistence", () => {
++  it("writes chats and messages through to the durable store", async () => {
++    const { rows, adapter } = fakePersistence();
++    const store = new ConversationStore({ persistence: adapter });
++    store.ingestHistory({ chats: [chat("a@s.whatsapp.net", { name: "Alice" })] });
++    store.ingestMessages({
++      messages: [textMessage("a@s.whatsapp.net", "hi", { id: "1", ts: 10 })],
++    });
++
++    await store.flush();
++
++    expect(rows.get("a@s.whatsapp.net")?.chat.name).toBe("Alice");
++    expect(rows.get("a@s.whatsapp.net")?.messages.map((m) => m.text)).toEqual(["hi"]);
++  });
++
++  it("hydrates a fresh store from persisted rows", async () => {
++    const { rows, adapter } = fakePersistence();
++    rows.set("a@s.whatsapp.net", {
++      chat: {
++        jid: "a@s.whatsapp.net",
++        name: "Alice",
++        unreadCount: 0,
++        lastMessageTimestamp: 10,
++        lastMessageText: "hi",
++      },
++      messages: [{ id: "1", fromMe: false, timestamp: 10, text: "hi" }],
++    });
++
++    const store = new ConversationStore({ persistence: adapter });
++    await store.hydrate();
++
++    expect(store.listChats().map((c) => c.jid)).toEqual(["a@s.whatsapp.net"]);
++    expect(store.readConversation("a@s.whatsapp.net").map((m) => m.text)).toEqual(["hi"]);
++  });
++
++  it("merges hydrated rows under fresher live messages without clobbering", async () => {
++    const { rows, adapter } = fakePersistence();
++    rows.set("a@s.whatsapp.net", {
++      chat: {
++        jid: "a@s.whatsapp.net",
++        unreadCount: 0,
++        lastMessageTimestamp: 10,
++        lastMessageText: "old",
++      },
++      messages: [{ id: "1", fromMe: false, timestamp: 10, text: "old" }],
++    });
++
++    const store = new ConversationStore({ persistence: adapter });
++    // A newer live message arrives before hydrate runs.
++    store.ingestMessages({
++      messages: [textMessage("a@s.whatsapp.net", "new", { id: "2", ts: 20 })],
++    });
++    await store.hydrate();
++
++    expect(store.readConversation("a@s.whatsapp.net").map((m) => m.text)).toEqual(["old", "new"]);
++    expect(store.listChats()[0].lastMessageText).toBe("new");
++  });
++
++  it("flushes pending changes on close even before the debounce fires", async () => {
++    const { rows, adapter } = fakePersistence();
++    const store = new ConversationStore({ persistence: adapter, flushDebounceMs: 100_000 });
++    store.ingestMessages({
++      messages: [textMessage("a@s.whatsapp.net", "bye", { id: "1", ts: 1 })],
++    });
++
++    expect(rows.size).toBe(0); // debounce hasn't fired
++
++    await store.close();
++
++    expect(rows.get("a@s.whatsapp.net")?.messages.map((m) => m.text)).toEqual(["bye"]);
++  });
++
++  it("is a no-op without a persistence adapter", async () => {
++    const store = new ConversationStore();
++    store.ingestMessages({
++      messages: [textMessage("a@s.whatsapp.net", "hi", { id: "1", ts: 1 })],
++    });
++    await expect(store.flush()).resolves.toBeUndefined();
++    await expect(store.hydrate()).resolves.toBeUndefined();
++    await expect(store.close()).resolves.toBeUndefined();
++  });
++});
 diff --git a/extensions/whatsapp/src/inbound/conversation-store.ts b/extensions/whatsapp/src/inbound/conversation-store.ts
 new file mode 100644
-index 0000000000..bf0ff1dadd
+index 0000000000..2cae54ff1d
 --- /dev/null
 +++ b/extensions/whatsapp/src/inbound/conversation-store.ts
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,395 @@
 +import type { Chat, ChatUpdate, WAMessage } from "baileys";
 +import { extractMediaPlaceholder, extractText } from "./extract.js";
 +
@@ -768,11 +987,16 @@ index 0000000000..bf0ff1dadd
 + * Baileys exposes no on-demand query API — chat lists and message history
 + * exist ONLY as streamed events (`messaging-history.set`, `chats.upsert`,
 + * `chats.update`, `messages.upsert`). To let the agent list and inspect
-+ * conversations we capture those events here, in RAM only. Nothing is ever
-+ * written to disk: the mirror is rebuilt from WhatsApp's on-connect history
-+ * sync on every reconnect and is gone on process restart.
++ * conversations we capture those events here.
 + *
-+ * Both maps are bounded so a busy account can't grow memory without limit.
++ * The maps are the working copy (fast reads) and are bounded so a busy account
++ * can't grow memory without limit. When a persistence adapter is supplied (see
++ * openConversationPersistence — enabled with OPENCLAW_WHATSAPP_FULL_HISTORY),
++ * changes are debounce-flushed to a durable keyed store and reloaded via
++ * hydrate() on startup, so the one-time full-history backlog survives process
++ * restarts instead of being gone until the device is re-linked. Without an
++ * adapter the mirror is RAM-only and rebuilt from WhatsApp's on-connect history
++ * sync on every reconnect.
 + */
 +
 +const MAX_CHATS = 500;
@@ -804,6 +1028,16 @@ index 0000000000..bf0ff1dadd
 +  on: (event: string, listener: (...args: unknown[]) => void) => void;
 +  off?: (event: string, listener: (...args: unknown[]) => void) => void;
 +  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
++};
++
++/**
++ * Durable backing for the mirror. Implemented over the plugin runtime's keyed
++ * store (see conversation-persistence.ts); one entry per chat JID.
++ */
++export type ConversationPersistence = {
++  loadAll(): Promise<Array<{ jid: string; chat: ChatSummary; messages: MessageSummary[] }>>;
++  save(jid: string, chat: ChatSummary, messages: MessageSummary[]): Promise<void>;
++  remove(jid: string): Promise<void>;
 +};
 +
 +/** Baileys timestamps are `number | Long`; normalize to a plain number. */
@@ -847,6 +1081,124 @@ index 0000000000..bf0ff1dadd
 +export class ConversationStore {
 +  private readonly chats = new Map<string, ChatSummary>();
 +  private readonly messages = new Map<string, MessageSummary[]>();
++  private readonly persistence?: ConversationPersistence;
++  private readonly flushDebounceMs: number;
++  private readonly onError: (error: unknown) => void;
++  private readonly dirty = new Set<string>();
++  private flushTimer?: ReturnType<typeof setTimeout>;
++  private closed = false;
++  private hydrated = false;
++
++  constructor(
++    opts: {
++      persistence?: ConversationPersistence;
++      flushDebounceMs?: number;
++      onError?: (error: unknown) => void;
++    } = {},
++  ) {
++    this.persistence = opts.persistence;
++    this.flushDebounceMs = opts.flushDebounceMs ?? 2000;
++    this.onError = opts.onError ?? (() => {});
++  }
++
++  /**
++   * Load the persisted mirror into memory once, at startup. Safe to call before
++   * or after bind(): seeding merges by recency and message id, so a persisted
++   * row never clobbers a fresher one that already arrived from the live socket.
++   */
++  async hydrate(): Promise<void> {
++    if (!this.persistence || this.hydrated) {
++      return;
++    }
++    this.hydrated = true;
++    try {
++      const rows = await this.persistence.loadAll();
++      for (const row of rows) {
++        this.seedPersisted(row.jid, row.chat, row.messages);
++      }
++    } catch (error) {
++      this.onError(error);
++    }
++  }
++
++  /** Write pending changes through to the durable store (no-op without one). */
++  async flush(): Promise<void> {
++    const persistence = this.persistence;
++    if (!persistence || this.dirty.size === 0) {
++      return;
++    }
++    const jids = [...this.dirty];
++    this.dirty.clear();
++    await Promise.all(
++      jids.map(async (jid) => {
++        try {
++          const chat = this.chats.get(jid);
++          if (!chat) {
++            await persistence.remove(jid);
++          } else {
++            await persistence.save(jid, chat, this.messages.get(jid) ?? []);
++          }
++        } catch (error) {
++          this.onError(error);
++        }
++      }),
++    );
++  }
++
++  /** Stop the flush timer and persist any pending changes a final time. */
++  async close(): Promise<void> {
++    this.closed = true;
++    if (this.flushTimer) {
++      clearTimeout(this.flushTimer);
++      this.flushTimer = undefined;
++    }
++    await this.flush();
++  }
++
++  private markDirty(jid: string): void {
++    if (!this.persistence || this.closed || !jid || jid === STATUS_BROADCAST_JID) {
++      return;
++    }
++    this.dirty.add(jid);
++    if (this.flushTimer) {
++      return;
++    }
++    this.flushTimer = setTimeout(() => {
++      this.flushTimer = undefined;
++      void this.flush();
++    }, this.flushDebounceMs);
++    this.flushTimer.unref?.();
++  }
++
++  private seedPersisted(jid: string, chat: ChatSummary, messages: MessageSummary[]): void {
++    if (!jid || jid === STATUS_BROADCAST_JID) {
++      return;
++    }
++    const existing = this.chats.get(jid);
++    if (!existing) {
++      this.chats.set(jid, { ...chat, jid });
++    } else if (chat.lastMessageTimestamp > existing.lastMessageTimestamp) {
++      existing.lastMessageTimestamp = chat.lastMessageTimestamp;
++      existing.lastMessageText = chat.lastMessageText;
++      existing.name ??= chat.name;
++    }
++    const buffer = this.messages.get(jid) ?? [];
++    const seen = new Set(buffer.map((msg) => msg.id).filter(Boolean) as string[]);
++    for (const msg of messages) {
++      if (msg.id && seen.has(msg.id)) {
++        continue;
++      }
++      buffer.push(msg);
++      if (msg.id) {
++        seen.add(msg.id);
++      }
++    }
++    buffer.sort((a, b) => a.timestamp - b.timestamp);
++    if (buffer.length > MAX_MESSAGES_PER_CHAT) {
++      buffer.splice(0, buffer.length - MAX_MESSAGES_PER_CHAT);
++    }
++    this.messages.set(jid, buffer);
++  }
 +
 +  ingestHistory(set: { chats?: Chat[]; messages?: WAMessage[] }): void {
 +    for (const chat of set.chats ?? []) {
@@ -885,6 +1237,7 @@ index 0000000000..bf0ff1dadd
 +      if (ts) {
 +        existing.lastMessageTimestamp = Math.max(existing.lastMessageTimestamp, ts);
 +      }
++      this.markDirty(jid);
 +    }
 +  }
 +
@@ -959,6 +1312,7 @@ index 0000000000..bf0ff1dadd
 +      lastMessageText: existing?.lastMessageText,
 +    });
 +    this.evictChatsIfNeeded();
++    this.markDirty(jid);
 +  }
 +
 +  private appendMessage(msg: WAMessage): void {
@@ -981,6 +1335,7 @@ index 0000000000..bf0ff1dadd
 +    }
 +    this.messages.set(jid, buffer);
 +    this.touchChatFromMessage(jid, summary);
++    this.markDirty(jid);
 +  }
 +
 +  private touchChatFromMessage(jid: string, summary: MessageSummary): void {
@@ -1014,29 +1369,48 @@ index 0000000000..bf0ff1dadd
 +      const victim = oldestFirst[i];
 +      this.chats.delete(victim.jid);
 +      this.messages.delete(victim.jid);
++      this.markDirty(victim.jid);
 +    }
 +  }
 +}
 diff --git a/extensions/whatsapp/src/inbound/monitor.ts b/extensions/whatsapp/src/inbound/monitor.ts
-index d4bbafa399..7e9fd8d3d0 100644
+index d4bbafa399..370e043500 100644
 --- a/extensions/whatsapp/src/inbound/monitor.ts
 +++ b/extensions/whatsapp/src/inbound/monitor.ts
-@@ -58,6 +58,7 @@ import {
+@@ -58,6 +58,10 @@ import {
    hasInboundUserContent,
  } from "./extract.js";
  import { attachEmitterListener, closeInboundMonitorSocket } from "./lifecycle.js";
 +import { ConversationStore } from "./conversation-store.js";
++import { openConversationPersistence } from "./conversation-persistence.js";
++import { isFullHistorySyncEnabled } from "../full-history.js";
++import { getOptionalWhatsAppRuntime } from "../runtime.js";
  import { downloadInboundMedia, downloadQuotedInboundMedia } from "./media.js";
  import {
    addWhatsAppOutboundMentionsToContent,
-@@ -1246,6 +1247,18 @@ export async function attachWebInboxToSocket(
+@@ -1246,6 +1250,39 @@ export async function attachWebInboxToSocket(
      pendingMessageHandlers.delete(replayTask);
    });
  
-+  // In-memory mirror of chats + recent messages (RAM only, never persisted).
-+  // Powers the whatsapp_list_chats / whatsapp_read_conversation agent tools;
-+  // rebuilt from WhatsApp's on-connect history sync on every reconnect.
-+  const conversationStore = new ConversationStore();
++  // Mirror of chats + recent messages powering the whatsapp_list_chats /
++  // whatsapp_read_conversation agent tools. With full-history sync enabled it
++  // persists to a durable keyed store so the one-time backlog survives process
++  // restarts (hydrated below); otherwise it stays RAM-only and rebuilds from
++  // WhatsApp's on-connect history sync on every reconnect.
++  const conversationPersistence = isFullHistorySyncEnabled()
++    ? openConversationPersistence(
++        getOptionalWhatsAppRuntime()?.state?.openKeyedStore,
++        options.accountId,
++      )
++    : undefined;
++  const conversationStore = new ConversationStore({
++    persistence: conversationPersistence,
++    onError: (error) =>
++      inboundLogger.warn(
++        { error: String(error) },
++        "WhatsApp conversation mirror persistence error",
++      ),
++  });
 +  const detachConversationStore = conversationStore.bind(
 +    sock.ev as unknown as {
 +      on: (event: string, listener: (...args: unknown[]) => void) => void;
@@ -1044,11 +1418,17 @@ index d4bbafa399..7e9fd8d3d0 100644
 +      removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
 +    },
 +  );
++  void conversationStore.hydrate().catch((error: unknown) => {
++    inboundLogger.warn(
++      { error: String(error) },
++      "failed hydrating WhatsApp conversation mirror",
++    );
++  });
 +
    void (async () => {
      try {
        const groups = await sock.groupFetchAllParticipating();
-@@ -1287,10 +1300,69 @@ export async function attachWebInboxToSocket(
+@@ -1287,10 +1324,69 @@ export async function attachWebInboxToSocket(
          }
          return currentSock.sendPresenceUpdate(presenceLocal, jid);
        },
@@ -1118,15 +1498,16 @@ index d4bbafa399..7e9fd8d3d0 100644
    });
  
    return {
-@@ -1298,6 +1370,7 @@ export async function attachWebInboxToSocket(
+@@ -1298,6 +1394,8 @@ export async function attachWebInboxToSocket(
        try {
          detachMessagesUpsert();
          detachConnectionUpdate();
 +        detachConversationStore();
++        await conversationStore.close();
          await drainInboundBeforeSocketCloseWithTimeout();
        } catch (err) {
          logWhatsAppVerbose(options.verbose, `Inbound close drain failed: ${String(err)}`);
-@@ -1316,6 +1389,20 @@ export async function attachWebInboxToSocket(
+@@ -1316,6 +1414,20 @@ export async function attachWebInboxToSocket(
      sendMessage: sendApi.sendMessage,
      sendPoll: sendApi.sendPoll,
      sendReaction: sendApi.sendReaction,
@@ -1293,3 +1674,41 @@ index a657ea1665..bd54152450 100644
    close?: () => Promise<void>;
  };
  
+diff --git a/extensions/whatsapp/src/session.ts b/extensions/whatsapp/src/session.ts
+index 7f8101165c..5a23a1c587 100644
+--- a/extensions/whatsapp/src/session.ts
++++ b/extensions/whatsapp/src/session.ts
+@@ -37,6 +37,7 @@ import {
+   DEFAULT_WHATSAPP_SOCKET_TIMING,
+   type WhatsAppSocketTimingOptions,
+ } from "./socket-timing.js";
++import { isFullHistorySyncEnabled } from "./full-history.js";
+ export { formatError, getStatusCode } from "./session-errors.js";
+ 
+ export {
+@@ -169,6 +170,7 @@ export async function createWaSocket(
+     defaultQueryTimeoutMs:
+       opts.defaultQueryTimeoutMs ?? DEFAULT_WHATSAPP_SOCKET_TIMING.defaultQueryTimeoutMs,
+   };
++  const fullHistory = isFullHistorySyncEnabled();
+   const sock = makeWASocket({
+     auth: {
+       creds: state.creds,
+@@ -177,8 +179,15 @@ export async function createWaSocket(
+     version,
+     logger,
+     printQRInTerminal: false,
+-    browser: ["openclaw", "cli", VERSION],
+-    syncFullHistory: false,
++    // Full history requires BOTH syncFullHistory AND a Desktop identity: baileys
++    // getWebInfo() only sets a non-WEB_BROWSER webSubPlatform when browser[0] is
++    // "Mac OS"/"Windows" and browser[1] === "Desktop", and requireFullSync is
++    // negotiated in generateRegistrationNode (initial pairing) only — so the flag
++    // is inert without the Desktop identity, and an already-linked device must be
++    // re-linked (scan QR) to backfill. Keep the normal identity when disabled so
++    // linked devices still read as "openclaw".
++    browser: fullHistory ? ["Mac OS", "Desktop", VERSION] : ["openclaw", "cli", VERSION],
++    syncFullHistory: fullHistory,
+     markOnlineOnConnect: false,
+     ...socketTiming,
+     agent,
