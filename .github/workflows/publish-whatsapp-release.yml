@@ -88,19 +88,24 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: whatsapp-v${{ steps.pack.outputs.version }}
-          name: "@openclaw/whatsapp ${{ steps.pack.outputs.version }} (Clawnify fork + group/conversation tools)"
+          name: "@openclaw/whatsapp ${{ steps.pack.outputs.version }} (Clawnify fork)"
           body: |
             Clawnify fork of `@openclaw/whatsapp@${{ steps.pack.outputs.version }}` (built on upstream
-            `${{ steps.target.outputs.tag }}`) with opt-in agent tools:
-            - Group management (`whatsapp_group_create`, `whatsapp_group_add_participants`,
-              `whatsapp_group_invite_link`), gated behind `OPENCLAW_WHATSAPP_GROUPS=1`.
-            - Conversation read (`whatsapp_list_chats`, `whatsapp_read_conversation`), gated behind
-              `OPENCLAW_WHATSAPP_CONVERSATIONS=1`. In-memory mirror, RAM only, never persisted.
+            `${{ steps.target.outputs.tag }}`). The authoritative delta is
+            `clawnify-patches/whatsapp-clawnify-tools.patch` — always check the patch for the exact
+            current feature set, not this list (which can lag). At time of writing:
+            - Group management (`whatsapp_group_create` / `_add_participants` / `_invite_link`),
+              gate `OPENCLAW_WHATSAPP_GROUPS=1`.
+            - Conversation read (`whatsapp_list_chats` / `whatsapp_read_conversation`) with a
+              file-persistent mirror + on-demand history fetch, gate `OPENCLAW_WHATSAPP_CONVERSATIONS=1`.
+            - Profile tools (`whatsapp_get_profile` / `_set_profile_name` / `_set_profile_picture`),
+              gate `OPENCLAW_WHATSAPP_PROFILE=1`.
+            - Outbound to any number, opt-in via `plugins.entries.whatsapp.config.outboundOpen`
+              (default off; inbound stays gated by `dmPolicy`/`allowFrom`).
 
             Install on a server running openclaw `${{ steps.pack.outputs.version }}`:
             ```
             openclaw plugins install <this-asset-url> --force --pin
             ```
-            Interim until openclaw/openclaw#89033 lands.
           files: ${{ steps.pack.outputs.tarball }}
           fail_on_unmatched_files: true
