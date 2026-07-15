@@ -79,6 +79,12 @@ function buildWhatsAppCommonShape(params: { useDefaults: boolean }) {
     groupPolicy: params.useDefaults
       ? GroupPolicySchema.optional().default("allowlist")
       : GroupPolicySchema.optional(),
+    // Outbound target authorization, independent of the inbound `allowFrom`
+    // sender allowlist. When true the agent may send to any number; dmPolicy/
+    // allowFrom still gate who can trigger a reply. Default false (restricted).
+    // Read from `plugins.entries.whatsapp.config.outboundOpen`; declared here so
+    // the plugin's generated config schema accepts (and the gateway validates) it.
+    outboundOpen: z.boolean().optional(),
     contextVisibility: ContextVisibilityModeSchema.optional(),
     historyLimit: z.number().int().min(0).optional(),
     dmHistoryLimit: z.number().int().min(0).optional(),

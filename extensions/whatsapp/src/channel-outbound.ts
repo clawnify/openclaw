@@ -21,22 +21,25 @@ function normalizeWhatsAppChannelSendText(text: string | undefined): string {
 }
 
 /**
- * Outbound target policy, read from the plugin-scoped config bag
- * `plugins.entries.whatsapp.config.outboundOpen`.
- *
- * Why not `channels.whatsapp.outboundPolicy`: `channels.whatsapp` is validated
- * with `.strict()`, so an unknown channel key is rejected. `plugins.entries.<id>.config`
- * is a `z.record(z.unknown())` passthrough, so the flag validates without a
- * channel-schema change and is read from the resolved config here.
- *
- * When true the agent may send to any number; `dmPolicy`/`allowFrom` still gate
- * who can trigger a reply, so inbound stays restricted. Default: allowlist.
+ * Outbound target policy, read from `channels.whatsapp.outboundOpen` (a
+ * first-class channel setting alongside `dmPolicy`/`groupPolicy`/`allowFrom`,
+ * with the usual per-account override). When true the agent may send to any
+ * number; `dmPolicy`/`allowFrom` still gate who can trigger a reply, so inbound
+ * stays restricted. Default false (restricted). The field is declared in the
+ * WhatsApp config schema, so the plugin's generated `channelConfigs` schema
+ * validates it and the gateway accepts the config write.
  */
-function resolveWhatsAppOutboundPolicy(cfg: OpenClawConfig | undefined): "allowlist" | "open" {
-  const pluginConfig = cfg?.plugins?.entries?.whatsapp?.config as
-    | { outboundOpen?: unknown }
-    | undefined;
-  return pluginConfig?.outboundOpen === true ? "open" : "allowlist";
+function resolveWhatsAppOutboundPolicy(
+  cfg: OpenClawConfig | undefined,
+  accountId: string | null | undefined,
+): "allowlist" | "open" {
+  const wa = cfg?.channels?.whatsapp;
+  const account =
+    accountId && wa?.accounts && typeof wa.accounts === "object"
+      ? wa.accounts[accountId]
+      : undefined;
+  const open = account?.outboundOpen ?? wa?.outboundOpen;
+  return open === true ? "open" : "allowlist";
 }
 
 export const whatsappChannelOutbound = {
@@ -49,12 +52,12 @@ export const whatsappChannelOutbound = {
       }),
     sendPollWhatsApp,
     shouldLogVerbose: () => getWhatsAppRuntime().logging.shouldLogVerbose(),
-    resolveTarget: ({ to, allowFrom, mode, cfg }) =>
+    resolveTarget: ({ to, allowFrom, mode, cfg, accountId }) =>
       resolveWhatsAppOutboundTarget({
         to,
         allowFrom,
         mode,
-        outboundPolicy: resolveWhatsAppOutboundPolicy(cfg),
+        outboundPolicy: resolveWhatsAppOutboundPolicy(cfg, accountId),
       }),
     normalizeText: normalizeWhatsAppChannelSendText,
   }),

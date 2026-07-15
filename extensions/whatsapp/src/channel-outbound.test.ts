@@ -129,28 +129,26 @@ describe("whatsappChannelOutbound", () => {
     });
   });
 
-  describe("resolveTarget outbound gate (plugins.entries.whatsapp.config.outboundOpen)", () => {
+  describe("resolveTarget outbound gate (channels.whatsapp.outboundOpen)", () => {
     const target = "+15551234567";
     const allowFrom = ["+15559999999"]; // does NOT include target
+    const cfgWith = (outboundOpen: boolean | undefined) =>
+      ({ channels: { whatsapp: outboundOpen === undefined ? {} : { outboundOpen } } }) as unknown as Parameters<
+        NonNullable<typeof whatsappChannelOutbound.resolveTarget>
+      >[0]["cfg"];
 
-    it("blocks a non-allowlisted number by default", () => {
+    it("blocks a non-allowlisted number by default (no cfg)", () => {
       const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, mode: "explicit" });
       expect(res?.ok).toBe(false);
     });
 
-    it("allows any number when outboundOpen is true", () => {
-      const cfg = {
-        plugins: { entries: { whatsapp: { config: { outboundOpen: true } } } },
-      } as unknown as Parameters<NonNullable<typeof whatsappChannelOutbound.resolveTarget>>[0]["cfg"];
-      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, cfg, mode: "explicit" });
+    it("allows any number when channels.whatsapp.outboundOpen is true", () => {
+      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, cfg: cfgWith(true), mode: "explicit" });
       expect(res?.ok).toBe(true);
     });
 
     it("still blocks when outboundOpen is false", () => {
-      const cfg = {
-        plugins: { entries: { whatsapp: { config: { outboundOpen: false } } } },
-      } as unknown as Parameters<NonNullable<typeof whatsappChannelOutbound.resolveTarget>>[0]["cfg"];
-      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, cfg, mode: "explicit" });
+      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, cfg: cfgWith(false), mode: "explicit" });
       expect(res?.ok).toBe(false);
     });
   });

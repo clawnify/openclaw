@@ -70,6 +70,13 @@ type WhatsAppSharedConfig = {
    * - "allowlist": only allow group messages from senders in groupAllowFrom/allowFrom
    */
   groupPolicy?: GroupPolicy;
+  /**
+   * Outbound target authorization, independent of the inbound `allowFrom`
+   * allowlist. When true the agent may send to any number; dmPolicy/allowFrom
+   * still gate who can trigger a reply. Default false (restricted). Set via
+   * `plugins.entries.whatsapp.config.outboundOpen`.
+   */
+  outboundOpen?: boolean;
   /** Supplemental context visibility policy (all|allowlist|allowlist_quote). */
   contextVisibility?: ContextVisibilityMode;
   /** Max group messages to keep as history context (0 disables). */
