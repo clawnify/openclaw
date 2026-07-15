@@ -285,4 +285,45 @@ describe("resolveWhatsAppOutboundTarget", () => {
       expect(vi.mocked(normalize.normalizeWhatsAppTarget)).toHaveBeenCalledWith(PRIMARY_TARGET);
     });
   });
+
+  describe("outboundPolicy", () => {
+    it('"open" allows a plain number that is not in allowFrom', () => {
+      // Only `to` is normalized: the open path returns before touching allowFrom.
+      mockNormalizedDirectMessage(PRIMARY_TARGET);
+      expectResolutionOk(
+        {
+          to: PRIMARY_TARGET,
+          allowFrom: [SECONDARY_TARGET],
+          mode: "implicit",
+          outboundPolicy: "open",
+        },
+        PRIMARY_TARGET,
+      );
+    });
+
+    it('"allowlist" still denies a plain number not in allowFrom', () => {
+      mockNormalizedDirectMessage(PRIMARY_TARGET, SECONDARY_TARGET);
+      expectResolutionErrorMessage(
+        {
+          to: PRIMARY_TARGET,
+          allowFrom: [SECONDARY_TARGET],
+          mode: "implicit",
+          outboundPolicy: "allowlist",
+        },
+        `Target "${PRIMARY_TARGET}" is not listed in the configured WhatsApp allowFrom policy.`,
+      );
+    });
+
+    it("undefined outboundPolicy preserves the restrictive default (deny)", () => {
+      mockNormalizedDirectMessage(PRIMARY_TARGET, SECONDARY_TARGET);
+      expectResolutionErrorMessage(
+        {
+          to: PRIMARY_TARGET,
+          allowFrom: [SECONDARY_TARGET],
+          mode: "implicit",
+        },
+        `Target "${PRIMARY_TARGET}" is not listed in the configured WhatsApp allowFrom policy.`,
+      );
+    });
+  });
 });

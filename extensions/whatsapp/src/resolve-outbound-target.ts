@@ -17,6 +17,13 @@ export function resolveWhatsAppOutboundTarget(params: {
   to: string | null | undefined;
   allowFrom: Array<string | number> | null | undefined;
   mode: string | null | undefined;
+  /**
+   * Outbound target policy, independent of the inbound `allowFrom` sender
+   * allowlist. "open" lets the agent send to any number; "allowlist"
+   * (default) restricts plain-number sends to `allowFrom`. Group/newsletter
+   * JIDs are always allowed regardless of this policy.
+   */
+  outboundPolicy?: "allowlist" | "open" | null;
 }): WhatsAppOutboundTargetResolution {
   const trimmed = params.to?.trim() ?? "";
   if (!trimmed) {
@@ -34,6 +41,12 @@ export function resolveWhatsAppOutboundTarget(params: {
     };
   }
   if (isWhatsAppGroupJid(normalizedTo) || isWhatsAppNewsletterJid(normalizedTo)) {
+    return { ok: true, to: normalizedTo };
+  }
+
+  // "open" decouples outbound from the inbound allowlist: the agent may send to
+  // any number. Inbound reply authorization still runs through dmPolicy/allowFrom.
+  if (params.outboundPolicy === "open") {
     return { ok: true, to: normalizedTo };
   }
 

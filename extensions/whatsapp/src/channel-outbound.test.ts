@@ -128,4 +128,30 @@ describe("whatsappChannelOutbound", () => {
       preserveLeadingWhitespace: true,
     });
   });
+
+  describe("resolveTarget outbound gate (plugins.entries.whatsapp.config.outboundOpen)", () => {
+    const target = "+15551234567";
+    const allowFrom = ["+15559999999"]; // does NOT include target
+
+    it("blocks a non-allowlisted number by default", () => {
+      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, mode: "explicit" });
+      expect(res?.ok).toBe(false);
+    });
+
+    it("allows any number when outboundOpen is true", () => {
+      const cfg = {
+        plugins: { entries: { whatsapp: { config: { outboundOpen: true } } } },
+      } as unknown as Parameters<NonNullable<typeof whatsappChannelOutbound.resolveTarget>>[0]["cfg"];
+      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, cfg, mode: "explicit" });
+      expect(res?.ok).toBe(true);
+    });
+
+    it("still blocks when outboundOpen is false", () => {
+      const cfg = {
+        plugins: { entries: { whatsapp: { config: { outboundOpen: false } } } },
+      } as unknown as Parameters<NonNullable<typeof whatsappChannelOutbound.resolveTarget>>[0]["cfg"];
+      const res = whatsappChannelOutbound.resolveTarget?.({ to: target, allowFrom, cfg, mode: "explicit" });
+      expect(res?.ok).toBe(false);
+    });
+  });
 });
