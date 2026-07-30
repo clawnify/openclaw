@@ -280,4 +280,87 @@ describe("WhatsAppConnectionController", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not force-reconnect a transport-healthy, message-idle connection within the old app-silence window", async () => {
+    // Regression: the app-silence backstop used to be messageTimeoutMs * 4, so a
+    // quiet-but-healthy account force-reconnected on that cadence. It is now
+    // messageTimeoutMs * 24, and transport liveness (frames) alone must keep it up.
+    vi.useFakeTimers();
+    const controller = new WhatsAppConnectionController({
+      accountId: "work",
+      authDir: "/tmp/wa-auth",
+      verbose: false,
+      keepAlive: true,
+      heartbeatSeconds: 1,
+      transportTimeoutMs: 10_000,
+      messageTimeoutMs: 1_000, // old app-silence = 4s; new = 24s
+      watchdogCheckMs: 50,
+      reconnectPolicy: { initialMs: 250, maxMs: 1_000, factor: 2, jitter: 0, maxAttempts: 5 },
+    });
+
+    try {
+      const sock = createSocketWithTransportEmitter();
+      createWaSocketMock.mockResolvedValueOnce(sock as never);
+      waitForWaConnectionMock.mockResolvedValueOnce(undefined);
+
+      const timeouts: string[] = [];
+      await controller.openConnection({
+        connectionId: "conn-idle-healthy",
+        createListener: async () => createListenerStub() as never,
+        onWatchdogTimeout: () => timeouts.push("timeout"),
+      });
+
+      // Keep transport fresh (frames) with zero inbound messages, past the old 4s
+      // app-silence window (~5s total) but well under the new 24s backstop.
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(500);
+        sock.ws.emit("frame");
+      }
+
+      expect(timeouts.length).toBe(0);
+    } finally {
+      await controller.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("still force-reconnects on app-silence when appSilenceTimeoutMs is set short, even with healthy transport", async () => {
+    vi.useFakeTimers();
+    const controller = new WhatsAppConnectionController({
+      accountId: "work",
+      authDir: "/tmp/wa-auth",
+      verbose: false,
+      keepAlive: true,
+      heartbeatSeconds: 1,
+      transportTimeoutMs: 10_000,
+      messageTimeoutMs: 60_000,
+      appSilenceTimeoutMs: 300,
+      watchdogCheckMs: 20,
+      reconnectPolicy: { initialMs: 250, maxMs: 1_000, factor: 2, jitter: 0, maxAttempts: 5 },
+    });
+
+    try {
+      const sock = createSocketWithTransportEmitter();
+      createWaSocketMock.mockResolvedValueOnce(sock as never);
+      waitForWaConnectionMock.mockResolvedValueOnce(undefined);
+
+      const timeouts: string[] = [];
+      await controller.openConnection({
+        connectionId: "conn-app-silent",
+        createListener: async () => createListenerStub() as never,
+        onWatchdogTimeout: () => timeouts.push("timeout"),
+      });
+
+      // Transport stays fresh; no inbound → app-silence must fire past 300ms.
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        sock.ws.emit("frame");
+      }
+
+      expect(timeouts.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await controller.shutdown();
+      vi.useRealTimers();
+    }
+  });
 });

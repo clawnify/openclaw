@@ -38,6 +38,7 @@ export type WebMonitorTuning = {
   heartbeatSeconds?: number;
   transportTimeoutMs?: number;
   messageTimeoutMs?: number;
+  appSilenceTimeoutMs?: number;
   watchdogCheckMs?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   statusSink?: (status: WebChannelStatus) => void;
