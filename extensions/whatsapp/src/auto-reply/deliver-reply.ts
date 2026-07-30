@@ -27,7 +27,10 @@ import { formatError } from "../session.js";
 import { convertMarkdownTables } from "../text-runtime.js";
 import { markdownToWhatsApp } from "../text-runtime.js";
 import { whatsappOutboundLog } from "./loggers.js";
+import { computeTypingDelayMs, resolveWhatsAppTypingPacing } from "./typing-pacing.js";
 import type { WebInboundMsg } from "./types.js";
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 import { elide } from "./util.js";
 
 export type WhatsAppReplyDeliveryResult = {
@@ -164,9 +167,17 @@ export async function deliverWebReply(params: {
   // Text-only replies
   if (mediaList.length === 0 && textChunks.length) {
     const totalChunks = textChunks.length;
+    const pacing = resolveWhatsAppTypingPacing();
     for (const [index, chunk] of textChunks.entries()) {
       const chunkStarted = Date.now();
       const quote = getQuote();
+      // Human-like pacing (opt-in): show "composing" and pause proportionally to
+      // the chunk length before sending, instead of firing chunks instantly.
+      const typingDelayMs = computeTypingDelayMs(chunk.length, pacing);
+      if (typingDelayMs > 0) {
+        await msg.sendComposing().catch(() => {});
+        await sleep(typingDelayMs);
+      }
       rememberSendResult(await sendWithRetry(() => msg.reply(chunk, quote), "text"));
       if (!skipLog) {
         const durationMs = Date.now() - chunkStarted;
