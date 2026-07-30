@@ -265,6 +265,7 @@ export async function monitorWebChannel(
     heartbeatSeconds,
     transportTimeoutMs,
     messageTimeoutMs,
+    appSilenceTimeoutMs: tuning.appSilenceTimeoutMs,
     watchdogCheckMs,
     reconnectPolicy,
     socketTiming,

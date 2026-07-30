@@ -25,6 +25,16 @@ export const WHATSAPP_LOGGED_OUT_QR_MESSAGE =
   "WhatsApp reported the session is logged out. Cleared cached web session; please scan a new QR.";
 export const WHATSAPP_WATCHDOG_TIMEOUT_ERROR = "watchdog-timeout";
 
+// App-silence backstop as a multiple of messageTimeoutMs. Transport staleness
+// (transportTimeoutMs, ~5min) is the reliable liveness check — WhatsApp sends
+// keepalive frames regardless of message traffic, so a live socket with no
+// inbound messages is a normal *quiet* account, not a dead one. The app-silence
+// reconnect only exists to recover a rare "zombie" (frames flow but delivery
+// silently stalls), so it should be a long backstop, not a frequent recycle:
+// at the old 4x (2h) every low-traffic account force-reconnected ~12x/day, and
+// frequent reconnects are a known WhatsApp ban signal.
+const APP_SILENCE_MESSAGE_TIMEOUT_MULTIPLIER = 24;
+
 type TimerHandle = ReturnType<typeof setInterval>;
 type WaSocket = Awaited<ReturnType<typeof createWaSocket>>;
 
@@ -291,6 +301,7 @@ export class WhatsAppConnectionController {
     heartbeatSeconds: number;
     transportTimeoutMs: number;
     messageTimeoutMs: number;
+    appSilenceTimeoutMs?: number;
     watchdogCheckMs: number;
     reconnectPolicy: ReconnectPolicy;
     abortSignal?: AbortSignal;
@@ -305,7 +316,12 @@ export class WhatsAppConnectionController {
     this.heartbeatSeconds = params.heartbeatSeconds;
     this.transportTimeoutMs = params.transportTimeoutMs;
     this.messageTimeoutMs = params.messageTimeoutMs;
-    this.appSilenceTimeoutMs = Math.max(params.messageTimeoutMs, params.messageTimeoutMs * 4);
+    this.appSilenceTimeoutMs =
+      params.appSilenceTimeoutMs ??
+      Math.max(
+        params.messageTimeoutMs,
+        params.messageTimeoutMs * APP_SILENCE_MESSAGE_TIMEOUT_MULTIPLIER,
+      );
     this.watchdogCheckMs = params.watchdogCheckMs;
     this.reconnectPolicy = params.reconnectPolicy;
     this.abortSignal = params.abortSignal;
