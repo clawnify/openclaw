@@ -181,7 +181,13 @@ export async function createWaSocket(
     version,
     logger,
     printQRInTerminal: false,
-    browser: ["openclaw", "cli", VERSION],
+    // browser[0] is the only field WhatsApp shows verbatim (as "<client> (browser[0])"
+    // in Linked Devices — visible to the account owner, not to message recipients).
+    // Deployments override it via OPENCLAW_WHATSAPP_DEVICE_LABEL to show their own
+    // name instead of the raw project id. Truthful default; never impersonate a
+    // platform the host isn't. Registered at pairing time, so it only takes effect
+    // on a fresh link.
+    browser: [resolveWhatsAppDeviceLabel(), "cli", VERSION],
     syncFullHistory: false,
     markOnlineOnConnect: false,
     ...socketTiming,
@@ -304,6 +310,17 @@ function normalizeEnvProxyValue(value: string | undefined): string | null | unde
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Label shown as "<client> (LABEL)" in WhatsApp's Linked Devices (owner-visible
+ * only). Deployments set OPENCLAW_WHATSAPP_DEVICE_LABEL to their own name; the
+ * default is the project name. It is registered at pairing, so a change only
+ * applies to a fresh link.
+ */
+export function resolveWhatsAppDeviceLabel(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.OPENCLAW_WHATSAPP_DEVICE_LABEL?.trim();
+  return override && override.length > 0 ? override : "OpenClaw";
 }
 
 export async function waitForWaConnection(sock: ReturnType<typeof makeWASocket>) {
