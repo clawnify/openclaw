@@ -594,6 +594,40 @@ index 5553a4a32d..239c9ca9e6 100644
        watchdogCheckMs: params.watchdogCheckMs,
        reconnect: params.reconnect ?? { initialMs: 10, maxMs: 10, maxAttempts: 3, factor: 1.1 },
        sleep: params.sleep,
+diff --git a/extensions/whatsapp/src/auto-reply/deliver-reply.ts b/extensions/whatsapp/src/auto-reply/deliver-reply.ts
+index f9f53ff383..9e7e0a831c 100644
+--- a/extensions/whatsapp/src/auto-reply/deliver-reply.ts
++++ b/extensions/whatsapp/src/auto-reply/deliver-reply.ts
+@@ -30,8 +30,11 @@ import { formatError } from "../session.js";
+ import { convertMarkdownTables } from "../text-runtime.js";
+ import { markdownToWhatsApp } from "../text-runtime.js";
+ import { whatsappOutboundLog } from "./loggers.js";
++import { computeTypingDelayMs, resolveWhatsAppTypingPacing } from "./typing-pacing.js";
+ import { elide, markWhatsAppVisibleDeliveryError } from "./util.js";
+ 
++const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
++
+ export type WhatsAppReplyDeliveryResult = {
+   results: WhatsAppSendResult[];
+   receipt: MessageReceipt;
+@@ -181,9 +184,17 @@ export async function deliverWebReply(params: {
+   // Text-only replies
+   if (mediaList.length === 0 && textChunks.length) {
+     const totalChunks = textChunks.length;
++    const pacing = resolveWhatsAppTypingPacing();
+     for (const [index, chunk] of textChunks.entries()) {
+       const chunkStarted = Date.now();
+       const quote = getQuote();
++      // Human-like pacing (opt-in): show "composing" and pause proportionally to
++      // the chunk length before sending, instead of firing chunks instantly.
++      const typingDelayMs = computeTypingDelayMs(chunk.length, pacing);
++      if (typingDelayMs > 0) {
++        await msg.platform.sendComposing().catch(() => {});
++        await sleep(typingDelayMs);
++      }
+       rememberSendResult(await sendWithRetry(() => msg.platform.reply(chunk, quote), "text"));
+       if (!skipLog) {
+         const durationMs = Date.now() - chunkStarted;
 diff --git a/extensions/whatsapp/src/auto-reply/monitor.ts b/extensions/whatsapp/src/auto-reply/monitor.ts
 index 17c87750a4..6ae2d75dfe 100644
 --- a/extensions/whatsapp/src/auto-reply/monitor.ts
@@ -618,6 +652,152 @@ index b954d0918c..63fd298bef 100644
    watchdogCheckMs?: number;
    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
    statusSink?: (status: WebChannelStatus) => void;
+diff --git a/extensions/whatsapp/src/auto-reply/typing-pacing.test.ts b/extensions/whatsapp/src/auto-reply/typing-pacing.test.ts
+new file mode 100644
+index 0000000000..12cc0b0e6b
+--- /dev/null
++++ b/extensions/whatsapp/src/auto-reply/typing-pacing.test.ts
+@@ -0,0 +1,58 @@
++import { describe, expect, it } from "vitest";
++import {
++  computeTypingDelayMs,
++  DEFAULT_TYPING_PACING,
++  resolveWhatsAppTypingPacing,
++  type TypingPacing,
++} from "./typing-pacing.js";
++
++const on: TypingPacing = { ...DEFAULT_TYPING_PACING, enabled: true, jitter: 0 };
++
++describe("computeTypingDelayMs", () => {
++  it("returns 0 when disabled (default behavior unchanged)", () => {
++    expect(computeTypingDelayMs(500, { ...on, enabled: false })).toBe(0);
++  });
++
++  it("scales with length, clamped to [minMs, maxMs]", () => {
++    // short -> floored at minMs
++    expect(computeTypingDelayMs(1, on, 0.5)).toBe(on.minMs);
++    // very long -> capped at maxMs
++    expect(computeTypingDelayMs(100000, on, 0.5)).toBe(on.maxMs);
++    // mid -> base = len/cps*1000; 60 chars @20cps = 3000ms
++    expect(computeTypingDelayMs(60, on, 0.5)).toBe(3000);
++  });
++
++  it("applies symmetric jitter deterministically from the random arg", () => {
++    const p = { ...on, jitter: 0.5 };
++    const base = 3000; // 60 chars @20cps
++    expect(computeTypingDelayMs(60, p, 0.5)).toBe(base); // random 0.5 -> factor 0
++    expect(computeTypingDelayMs(60, p, 1)).toBe(base + base * 0.5); // +50%
++    expect(computeTypingDelayMs(60, p, 0)).toBe(base - base * 0.5); // -50%
++  });
++
++  it("never returns negative", () => {
++    expect(computeTypingDelayMs(60, { ...on, jitter: 5 }, 0)).toBeGreaterThanOrEqual(0);
++  });
++});
++
++describe("resolveWhatsAppTypingPacing", () => {
++  it("is disabled by default", () => {
++    expect(resolveWhatsAppTypingPacing({}).enabled).toBe(false);
++  });
++
++  it("enables on truthy env values", () => {
++    for (const v of ["1", "true", "yes", "on", "ON"]) {
++      expect(resolveWhatsAppTypingPacing({ OPENCLAW_WHATSAPP_TYPING_PACING: v }).enabled).toBe(true);
++    }
++  });
++
++  it("reads numeric overrides, ignoring invalid ones", () => {
++    const p = resolveWhatsAppTypingPacing({
++      OPENCLAW_WHATSAPP_TYPING_PACING: "1",
++      OPENCLAW_WHATSAPP_TYPING_CPS: "12",
++      OPENCLAW_WHATSAPP_TYPING_MAX_MS: "bogus",
++    });
++    expect(p.cps).toBe(12);
++    expect(p.maxMs).toBe(DEFAULT_TYPING_PACING.maxMs);
++  });
++});
+diff --git a/extensions/whatsapp/src/auto-reply/typing-pacing.ts b/extensions/whatsapp/src/auto-reply/typing-pacing.ts
+new file mode 100644
+index 0000000000..ec2f33b9d5
+--- /dev/null
++++ b/extensions/whatsapp/src/auto-reply/typing-pacing.ts
+@@ -0,0 +1,76 @@
++/**
++ * Human-like reply pacing. By default WhatsApp replies are dispatched the instant
++ * the agent finishes — chunks arrive back-to-back with no typing time, which reads
++ * as automated. When enabled, this inserts a "composing" indicator plus a bounded,
++ * jittered delay (roughly proportional to the reply length) before each chunk.
++ *
++ * Opt-in via OPENCLAW_WHATSAPP_TYPING_PACING so default behavior is unchanged;
++ * deployments enable it the same way as the other OPENCLAW_WHATSAPP_* gates.
++ */
++
++export type TypingPacing = {
++  enabled: boolean;
++  /** Simulated typing speed (characters per second). */
++  cps: number;
++  /** Floor so even a short reply pauses briefly. */
++  minMs: number;
++  /** Ceiling so a long reply never stalls the conversation. */
++  maxMs: number;
++  /** Fractional +/- randomization applied to the computed delay (0..1). */
++  jitter: number;
++};
++
++export const DEFAULT_TYPING_PACING: TypingPacing = {
++  enabled: false,
++  cps: 20,
++  minMs: 700,
++  maxMs: 6000,
++  jitter: 0.3,
++};
++
++function parsePositiveNumber(raw: string | undefined, fallback: number): number {
++  if (raw === undefined) {
++    return fallback;
++  }
++  const n = Number(raw.trim());
++  return Number.isFinite(n) && n > 0 ? n : fallback;
++}
++
++function isEnvTruthy(raw: string | undefined): boolean {
++  if (raw === undefined) {
++    return false;
++  }
++  const v = raw.trim().toLowerCase();
++  return v === "1" || v === "true" || v === "yes" || v === "on";
++}
++
++export function resolveWhatsAppTypingPacing(env: NodeJS.ProcessEnv = process.env): TypingPacing {
++  const enabled = isEnvTruthy(env.OPENCLAW_WHATSAPP_TYPING_PACING);
++  return {
++    enabled,
++    cps: parsePositiveNumber(env.OPENCLAW_WHATSAPP_TYPING_CPS, DEFAULT_TYPING_PACING.cps),
++    minMs: parsePositiveNumber(env.OPENCLAW_WHATSAPP_TYPING_MIN_MS, DEFAULT_TYPING_PACING.minMs),
++    maxMs: parsePositiveNumber(env.OPENCLAW_WHATSAPP_TYPING_MAX_MS, DEFAULT_TYPING_PACING.maxMs),
++    jitter: DEFAULT_TYPING_PACING.jitter,
++  };
++}
++
++/**
++ * Delay before a chunk of `textLength` characters. Pure and deterministic given
++ * `random` (0..1), so it is unit-testable without timers. Returns 0 when disabled.
++ */
++export function computeTypingDelayMs(
++  textLength: number,
++  pacing: TypingPacing,
++  random: number = Math.random(),
++): number {
++  if (!pacing.enabled) {
++    return 0;
++  }
++  const base = (Math.max(0, textLength) / pacing.cps) * 1000;
++  const clamped = Math.min(pacing.maxMs, Math.max(pacing.minMs, base));
++  const jitterSpan = clamped * pacing.jitter;
++  // random in [0,1) -> factor in [-1, 1)
++  const delay = clamped + jitterSpan * (random * 2 - 1);
++  return Math.round(Math.max(0, delay));
++}
 diff --git a/extensions/whatsapp/src/channel-outbound.test.ts b/extensions/whatsapp/src/channel-outbound.test.ts
 index 1f90bfb44f..9fe145a62d 100644
 --- a/extensions/whatsapp/src/channel-outbound.test.ts
@@ -742,9 +922,35 @@ index 5c897b285e..a451db9c88 100644
          channelId: "whatsapp",
          resolveAccount: resolveWhatsAppAccount,
 diff --git a/extensions/whatsapp/src/connection-controller.test.ts b/extensions/whatsapp/src/connection-controller.test.ts
-index b849723ec5..c6b0eb229f 100644
+index b849723ec5..4c492b11c5 100644
 --- a/extensions/whatsapp/src/connection-controller.test.ts
 +++ b/extensions/whatsapp/src/connection-controller.test.ts
+@@ -670,8 +670,8 @@ describe("WhatsAppConnectionController", () => {
+     }
+   });
+ 
+-  it("uses messageTimeoutMs * 4 as the app-silence window for fresh connections with no inbound", async () => {
+-    // Verifies the watchdog respects appSilenceTimeoutMs = messageTimeoutMs * 4 on first open.
++  it("uses messageTimeoutMs * 24 as the app-silence window for fresh connections with no inbound", async () => {
++    // Verifies the watchdog respects appSilenceTimeoutMs = messageTimeoutMs * 24 on first open.
+     // Transport is kept well within its own timeout so only app-silence fires.
+     vi.useFakeTimers();
+     const msgTimeoutMs = 100;
+@@ -705,11 +705,11 @@ describe("WhatsAppConnectionController", () => {
+         onWatchdogTimeout: () => timeouts.push("timeout"),
+       });
+ 
+-      // Just before messageTimeoutMs * 4 — no force-close expected
+-      await vi.advanceTimersByTimeAsync(msgTimeoutMs * 4 - 20);
++      // Just before messageTimeoutMs * 24 — no force-close expected
++      await vi.advanceTimersByTimeAsync(msgTimeoutMs * 24 - 20);
+       expect(timeouts).toHaveLength(0);
+ 
+-      // Past messageTimeoutMs * 4 — force-close must fire
++      // Past messageTimeoutMs * 24 — force-close must fire
+       await vi.advanceTimersByTimeAsync(40);
+       expect(timeouts.length).toBeGreaterThanOrEqual(1);
+     } finally {
 @@ -717,4 +717,87 @@ describe("WhatsAppConnectionController", () => {
        vi.useRealTimers();
      }
@@ -1988,6 +2194,71 @@ index 15ddee1266..116b4188c3 100644
      providerConfigPresent: params.providerConfigPresent,
      groupPolicy: params.groupPolicy,
      defaultGroupPolicy: params.defaultGroupPolicy,
+diff --git a/extensions/whatsapp/src/session-device-label.test.ts b/extensions/whatsapp/src/session-device-label.test.ts
+new file mode 100644
+index 0000000000..5e1b75ff55
+--- /dev/null
++++ b/extensions/whatsapp/src/session-device-label.test.ts
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from "vitest";
++import { resolveWhatsAppDeviceLabel } from "./session.js";
++
++describe("resolveWhatsAppDeviceLabel", () => {
++  it("defaults to the project name when unset", () => {
++    expect(resolveWhatsAppDeviceLabel({})).toBe("OpenClaw");
++  });
++
++  it("uses the deployment override when set", () => {
++    expect(resolveWhatsAppDeviceLabel({ OPENCLAW_WHATSAPP_DEVICE_LABEL: "Acme Agency" })).toBe(
++      "Acme Agency",
++    );
++  });
++
++  it("ignores a blank override", () => {
++    expect(resolveWhatsAppDeviceLabel({ OPENCLAW_WHATSAPP_DEVICE_LABEL: "   " })).toBe("OpenClaw");
++  });
++
++  it("trims the override", () => {
++    expect(resolveWhatsAppDeviceLabel({ OPENCLAW_WHATSAPP_DEVICE_LABEL: "  Acme  " })).toBe("Acme");
++  });
++});
+diff --git a/extensions/whatsapp/src/session.ts b/extensions/whatsapp/src/session.ts
+index 0c8945aaef..6ba7814aa6 100644
+--- a/extensions/whatsapp/src/session.ts
++++ b/extensions/whatsapp/src/session.ts
+@@ -207,7 +207,13 @@ export async function createWaSocket(
+     version,
+     logger,
+     printQRInTerminal: false,
+-    browser: ["openclaw", "cli", VERSION],
++    // browser[0] is the only field WhatsApp shows verbatim (as "<client> (browser[0])"
++    // in Linked Devices — visible to the account owner, not to message recipients).
++    // Deployments override it via OPENCLAW_WHATSAPP_DEVICE_LABEL to show their own
++    // name instead of the raw project id. Truthful default; never impersonate a
++    // platform the host isn't. Registered at pairing time, so it only takes effect
++    // on a fresh link.
++    browser: [resolveWhatsAppDeviceLabel(), "cli", VERSION],
+     syncFullHistory: false,
+     markOnlineOnConnect: false,
+     ...socketTiming,
+@@ -344,6 +350,17 @@ function normalizeEnvProxyValue(value: string | undefined): string | null | unde
+   return trimmed.length > 0 ? trimmed : null;
+ }
+ 
++/**
++ * Label shown as "<client> (LABEL)" in WhatsApp's Linked Devices (owner-visible
++ * only). Deployments set OPENCLAW_WHATSAPP_DEVICE_LABEL to their own name; the
++ * default is the project name. It is registered at pairing, so a change only
++ * applies to a fresh link.
++ */
++export function resolveWhatsAppDeviceLabel(env: NodeJS.ProcessEnv = process.env): string {
++  const override = env.OPENCLAW_WHATSAPP_DEVICE_LABEL?.trim();
++  return override && override.length > 0 ? override : "OpenClaw";
++}
++
+ type WhatsAppConnectionWaitOptions =
+   | {
+       timeout: "none";
 diff --git a/src/config/bundled-channel-config-metadata.generated.ts b/src/config/bundled-channel-config-metadata.generated.ts
 index ed3a798ae6..b06632f96d 100644
 --- a/src/config/bundled-channel-config-metadata.generated.ts
