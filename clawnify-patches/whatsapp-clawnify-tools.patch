@@ -574,6 +574,50 @@ index 0000000000..1a636325f5
 +    createWhatsAppSetProfilePictureTool(),
 +  ];
 +}
+diff --git a/extensions/whatsapp/src/auto-reply.test-harness.ts b/extensions/whatsapp/src/auto-reply.test-harness.ts
+index 5553a4a32d..239c9ca9e6 100644
+--- a/extensions/whatsapp/src/auto-reply.test-harness.ts
++++ b/extensions/whatsapp/src/auto-reply.test-harness.ts
+@@ -348,6 +348,7 @@ export function startWebAutoReplyMonitor(params: {
+   heartbeatSeconds?: number;
+   transportTimeoutMs?: number;
+   messageTimeoutMs?: number;
++  appSilenceTimeoutMs?: number;
+   watchdogCheckMs?: number;
+   reconnect?: { initialMs: number; maxMs: number; maxAttempts: number; factor: number };
+   accountId?: string;
+@@ -366,6 +367,7 @@ export function startWebAutoReplyMonitor(params: {
+       heartbeatSeconds: params.heartbeatSeconds ?? 1,
+       transportTimeoutMs: params.transportTimeoutMs,
+       messageTimeoutMs: params.messageTimeoutMs,
++      appSilenceTimeoutMs: params.appSilenceTimeoutMs,
+       watchdogCheckMs: params.watchdogCheckMs,
+       reconnect: params.reconnect ?? { initialMs: 10, maxMs: 10, maxAttempts: 3, factor: 1.1 },
+       sleep: params.sleep,
+diff --git a/extensions/whatsapp/src/auto-reply/monitor.ts b/extensions/whatsapp/src/auto-reply/monitor.ts
+index 17c87750a4..6ae2d75dfe 100644
+--- a/extensions/whatsapp/src/auto-reply/monitor.ts
++++ b/extensions/whatsapp/src/auto-reply/monitor.ts
+@@ -235,6 +235,7 @@ export async function monitorWebChannel(
+     heartbeatSeconds,
+     transportTimeoutMs,
+     messageTimeoutMs,
++    appSilenceTimeoutMs: tuning.appSilenceTimeoutMs,
+     watchdogCheckMs,
+     reconnectPolicy,
+     socketTiming,
+diff --git a/extensions/whatsapp/src/auto-reply/types.ts b/extensions/whatsapp/src/auto-reply/types.ts
+index b954d0918c..63fd298bef 100644
+--- a/extensions/whatsapp/src/auto-reply/types.ts
++++ b/extensions/whatsapp/src/auto-reply/types.ts
+@@ -44,6 +44,7 @@ export type WebMonitorTuning = {
+   heartbeatSeconds?: number;
+   transportTimeoutMs?: number;
+   messageTimeoutMs?: number;
++  appSilenceTimeoutMs?: number;
+   watchdogCheckMs?: number;
+   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+   statusSink?: (status: WebChannelStatus) => void;
 diff --git a/extensions/whatsapp/src/channel-outbound.test.ts b/extensions/whatsapp/src/channel-outbound.test.ts
 index 1f90bfb44f..9fe145a62d 100644
 --- a/extensions/whatsapp/src/channel-outbound.test.ts
@@ -697,6 +741,141 @@ index 5c897b285e..a451db9c88 100644
        allowlist: buildDmGroupAccountAllowlistAdapter({
          channelId: "whatsapp",
          resolveAccount: resolveWhatsAppAccount,
+diff --git a/extensions/whatsapp/src/connection-controller.test.ts b/extensions/whatsapp/src/connection-controller.test.ts
+index b849723ec5..c6b0eb229f 100644
+--- a/extensions/whatsapp/src/connection-controller.test.ts
++++ b/extensions/whatsapp/src/connection-controller.test.ts
+@@ -717,4 +717,87 @@ describe("WhatsAppConnectionController", () => {
+       vi.useRealTimers();
+     }
+   });
++
++  it("does not force-reconnect a transport-healthy, message-idle connection within the old app-silence window", async () => {
++    // Regression: the app-silence backstop used to be messageTimeoutMs * 4, so a
++    // quiet-but-healthy account force-reconnected on that cadence. It is now
++    // messageTimeoutMs * 24, and transport liveness (frames) alone must keep it up.
++    vi.useFakeTimers();
++    const controller = new WhatsAppConnectionController({
++      accountId: "work",
++      authDir: "/tmp/wa-auth",
++      verbose: false,
++      keepAlive: true,
++      heartbeatSeconds: 1,
++      transportTimeoutMs: 10_000,
++      messageTimeoutMs: 1_000, // old app-silence = 4s; new = 24s
++      watchdogCheckMs: 50,
++      reconnectPolicy: { initialMs: 250, maxMs: 1_000, factor: 2, jitter: 0, maxAttempts: 5 },
++    });
++
++    try {
++      const sock = createSocketWithTransportEmitter();
++      createWaSocketMock.mockResolvedValueOnce(sock as never);
++      waitForWaConnectionMock.mockResolvedValueOnce(undefined);
++
++      const timeouts: string[] = [];
++      await controller.openConnection({
++        connectionId: "conn-idle-healthy",
++        createListener: async () => createListenerStub() as never,
++        onWatchdogTimeout: () => timeouts.push("timeout"),
++      });
++
++      // Keep transport fresh (frames) with zero inbound messages, past the old 4s
++      // app-silence window (~5s total) but well under the new 24s backstop.
++      for (let i = 0; i < 10; i++) {
++        await vi.advanceTimersByTimeAsync(500);
++        sock.ws.emit("frame");
++      }
++
++      expect(timeouts.length).toBe(0);
++    } finally {
++      await controller.shutdown();
++      vi.useRealTimers();
++    }
++  });
++
++  it("still force-reconnects on app-silence when appSilenceTimeoutMs is set short, even with healthy transport", async () => {
++    vi.useFakeTimers();
++    const controller = new WhatsAppConnectionController({
++      accountId: "work",
++      authDir: "/tmp/wa-auth",
++      verbose: false,
++      keepAlive: true,
++      heartbeatSeconds: 1,
++      transportTimeoutMs: 10_000,
++      messageTimeoutMs: 60_000,
++      appSilenceTimeoutMs: 300,
++      watchdogCheckMs: 20,
++      reconnectPolicy: { initialMs: 250, maxMs: 1_000, factor: 2, jitter: 0, maxAttempts: 5 },
++    });
++
++    try {
++      const sock = createSocketWithTransportEmitter();
++      createWaSocketMock.mockResolvedValueOnce(sock as never);
++      waitForWaConnectionMock.mockResolvedValueOnce(undefined);
++
++      const timeouts: string[] = [];
++      await controller.openConnection({
++        connectionId: "conn-app-silent",
++        createListener: async () => createListenerStub() as never,
++        onWatchdogTimeout: () => timeouts.push("timeout"),
++      });
++
++      // Transport stays fresh; no inbound → app-silence must fire past 300ms.
++      for (let i = 0; i < 6; i++) {
++        await vi.advanceTimersByTimeAsync(100);
++        sock.ws.emit("frame");
++      }
++
++      expect(timeouts.length).toBeGreaterThanOrEqual(1);
++    } finally {
++      await controller.shutdown();
++      vi.useRealTimers();
++    }
++  });
+ });
+diff --git a/extensions/whatsapp/src/connection-controller.ts b/extensions/whatsapp/src/connection-controller.ts
+index 8a28efdbbc..e526e2a336 100644
+--- a/extensions/whatsapp/src/connection-controller.ts
++++ b/extensions/whatsapp/src/connection-controller.ts
+@@ -42,6 +42,16 @@ export const WHATSAPP_LOGGED_OUT_QR_MESSAGE =
+   "WhatsApp reported the session is logged out. Cleared cached web session; please scan a new QR.";
+ export const WHATSAPP_WATCHDOG_TIMEOUT_ERROR = "watchdog-timeout";
+ 
++// App-silence backstop as a multiple of messageTimeoutMs. Transport staleness
++// (transportTimeoutMs, ~5min) is the reliable liveness check — WhatsApp sends
++// keepalive frames regardless of message traffic, so a live socket with no
++// inbound messages is a normal *quiet* account, not a dead one. The app-silence
++// reconnect only exists to recover a rare "zombie" (frames flow but delivery
++// silently stalls), so it should be a long backstop, not a frequent recycle:
++// at the old 4x (2h) every low-traffic account force-reconnected ~12x/day, and
++// frequent reconnects are a known WhatsApp ban signal.
++const APP_SILENCE_MESSAGE_TIMEOUT_MULTIPLIER = 24;
++
+ type TimerHandle = ReturnType<typeof setInterval>;
+ type WaSocket = Awaited<ReturnType<typeof createWaSocket>>;
+ 
+@@ -390,6 +400,7 @@ export class WhatsAppConnectionController {
+     heartbeatSeconds: number;
+     transportTimeoutMs: number;
+     messageTimeoutMs: number;
++    appSilenceTimeoutMs?: number;
+     watchdogCheckMs: number;
+     reconnectPolicy: ReconnectPolicy;
+     abortSignal?: AbortSignal;
+@@ -404,7 +415,12 @@ export class WhatsAppConnectionController {
+     this.heartbeatSeconds = params.heartbeatSeconds;
+     this.transportTimeoutMs = params.transportTimeoutMs;
+     this.messageTimeoutMs = params.messageTimeoutMs;
+-    this.appSilenceTimeoutMs = params.messageTimeoutMs * 4;
++    this.appSilenceTimeoutMs =
++      params.appSilenceTimeoutMs ??
++      Math.max(
++        params.messageTimeoutMs,
++        params.messageTimeoutMs * APP_SILENCE_MESSAGE_TIMEOUT_MULTIPLIER,
++      );
+     this.watchdogCheckMs = params.watchdogCheckMs;
+     this.reconnectPolicy = params.reconnectPolicy;
+     this.abortSignal = params.abortSignal;
 diff --git a/extensions/whatsapp/src/conversations-enabled.ts b/extensions/whatsapp/src/conversations-enabled.ts
 new file mode 100644
 index 0000000000..74661cb05e
